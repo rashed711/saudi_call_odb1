@@ -1,0 +1,7 @@
+{
+  "name": "Copy of ODB Manager Pro",
+  "description": "نظام إدارة المواقع الجغرافية (ODB) مع لوحة تحكم، إعدادات، وخاصية الأماكن القريبة.",
+  "requestFramePermissions": [
+    "geolocation"
+  ]
+}
