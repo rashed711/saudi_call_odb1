@@ -1,3 +1,4 @@
+
 import { ODBLocation, User, SiteSettings, NearbyLocation, Permission, SystemLog, RoleDefinition, PermissionResource, PermissionAction, PermissionScope } from '../types';
 
 const API_BASE_URL = 'https://start.enjaz.cloud/api/api.php'; 
@@ -257,13 +258,18 @@ export const mockLogin = async (username: string, pass: string, deviceId?: strin
     finalUser.supervisorId = finalUser.supervisorId ? Number(finalUser.supervisorId) : null;
     finalUser.isActive = finalUser.isActive == 1 || finalUser.isActive === true;
 
-    // Load dynamic permissions
-    const roleDef = getRoleById(finalUser.role);
-    if (roleDef) {
-        finalUser.permissions = roleDef.permissions;
+    // Load dynamic permissions: Prioritize DB permissions if they exist
+    // This allows Admin to save custom permissions to the user record which override local role defaults
+    if (finalUser.permissions && Array.isArray(finalUser.permissions) && finalUser.permissions.length > 0) {
+        // Permissions came from DB, do nothing (keep them)
     } else {
-        // Fallback to delegate if role not found
-        finalUser.permissions = SYSTEM_ROLES.find(r => r.id === 'delegate')?.permissions || [];
+        // Fallback to role definition from local or system defaults
+        const roleDef = getRoleById(finalUser.role);
+        if (roleDef) {
+            finalUser.permissions = roleDef.permissions;
+        } else {
+            finalUser.permissions = SYSTEM_ROLES.find(r => r.id === 'delegate')?.permissions || [];
+        }
     }
 
     if (finalUser.username === 'admin') {
@@ -295,7 +301,12 @@ export const refreshUserSession = async (userId: number): Promise<User | null> =
         const rawUser = allUsers.find((u: any) => Number(u.id) === userId);
         if (!rawUser) return null;
 
-        const roleDef = getRoleById(rawUser.role) || SYSTEM_ROLES.find(r => r.id === 'delegate')!;
+        // Logic to determine permissions: DB > Local Role > Default
+        let userPerms = rawUser.permissions;
+        if (!userPerms || !Array.isArray(userPerms) || userPerms.length === 0) {
+             const roleDef = getRoleById(rawUser.role) || SYSTEM_ROLES.find(r => r.id === 'delegate')!;
+             userPerms = roleDef.permissions;
+        }
         
         const freshUser: User = {
             id: Number(rawUser.id),
@@ -305,7 +316,7 @@ export const refreshUserSession = async (userId: number): Promise<User | null> =
             role: rawUser.role,
             supervisorId: rawUser.supervisorId ? Number(rawUser.supervisorId) : null,
             isActive: rawUser.isActive == 1 || rawUser.isActive === true,
-            permissions: roleDef.permissions,
+            permissions: userPerms,
             deviceId: rawUser.deviceId || null
         };
         
@@ -345,14 +356,22 @@ export const applySiteSettings = (settings: SiteSettings) => {
 
 export const getUsers = async (currentUser: User): Promise<User[]> => {
     const allUsers = await apiRequest('get_users');
-    let usersList = allUsers.map((u: any) => ({
-        ...u,
-        id: Number(u.id),
-        supervisorId: u.supervisorId ? Number(u.supervisorId) : null,
-        isActive: u.isActive == 1 || u.isActive === true,
-        permissions: getRoleById(u.role)?.permissions || [],
-        deviceId: u.deviceId || null
-    }));
+    let usersList = allUsers.map((u: any) => {
+        // Resolve permissions for listing: DB > Role
+        let perms = u.permissions;
+        if (!perms || !Array.isArray(perms) || perms.length === 0) {
+             perms = getRoleById(u.role)?.permissions || [];
+        }
+
+        return {
+            ...u,
+            id: Number(u.id),
+            supervisorId: u.supervisorId ? Number(u.supervisorId) : null,
+            isActive: u.isActive == 1 || u.isActive === true,
+            permissions: perms,
+            deviceId: u.deviceId || null
+        };
+    });
 
     // Logic to filter users based on currentUser scope
     const viewPerm = currentUser.permissions.find(p => p.resource === 'users' && p.action === 'view');

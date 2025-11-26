@@ -57,13 +57,13 @@ const UserManagement: React.FC = () => {
     if (!currentUser) return;
     setLoading(true);
     try {
+        // Always load roles first to use them for users
+        const r = getRoles();
+        setRoles(r);
+
         if (activeTab === 'users') {
             const u = await getUsers(currentUser);
             setUsers(u.filter(x => x.username !== 'admin')); // Hide super admin
-            const r = getRoles();
-            setRoles(r);
-        } else {
-            setRoles(getRoles());
         }
     } catch(e) { console.error(e); } 
     finally { setLoading(false); }
@@ -136,7 +136,18 @@ const UserManagement: React.FC = () => {
 
   const handleSaveUser = async () => {
       if (!editingUser.username || !editingUser.name) return alert("بيانات ناقصة");
-      await saveUser(editingUser as User);
+      
+      // CRITICAL FIX: Find the selected role definition to embed its permissions
+      // This ensures that the specific permissions configured for this role are saved WITH the user
+      // so they propagate to the user's device immediately, overriding any local defaults.
+      const selectedRoleDef = roles.find(r => r.id === editingUser.role);
+      
+      const userToSave: User = {
+          ...(editingUser as User),
+          permissions: selectedRoleDef ? selectedRoleDef.permissions : []
+      };
+
+      await saveUser(userToSave);
       setUserModalOpen(false);
       loadData();
   };

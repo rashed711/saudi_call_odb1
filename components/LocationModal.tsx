@@ -61,26 +61,25 @@ export const LocationModal: React.FC<LocationModalProps> = ({
   const editStatus = useMemo(() => {
       if (mode === 'create') return { allowed: true, reason: '' };
       
-      // التغيير الجوهري هنا:
-      // لقد أزلنا الحظر المعتمد على "isLocked".
-      // الآن نعتمد كلياً على checkPermission (نظام الصلاحيات الذي تديره أنت).
-      // إذا منحت المندوب صلاحية "تعديل" (سواء الكل أو فريقه)، سيتجاوز القفل.
-      
       // 1. Check RBAC Permissions (صلاحيات الدور)
+      // This is the single source of truth. If checkPermission says yes (e.g., Scope='all'), 
+      // then we allow editing regardless of lock status (unless logic changes).
       const hasPerm = checkPermission(user, 'odb', 'edit', formData.ownerId);
       
       if (!hasPerm) {
-          // إذا لم يكن لديه صلاحية، نظهر السبب
+          // If no permission, we distinguish the reason for the user
           if (formData.isLocked) return { allowed: false, reason: 'مقفل / لا توجد صلاحية' };
-          return { allowed: false, reason: 'للمالك أو المشرف فقط' };
+          return { allowed: false, reason: 'ليس لديك صلاحية' };
       }
 
-      // إذا كان لديه صلاحية، نسمح له بالتعديل
+      // If they have permission, they can edit.
+      // Even if it's locked, if they have 'all' or 'team' scope that covers it, they can edit.
+      // The lock acts as a warning or protection against lower-scope edits.
       return { allowed: true, reason: '' };
   }, [formData, user, mode]);
 
   const canToggleLock = useMemo(() => {
-     // فقط المدير والمشرف يمكنهم تغيير حالة القفل
+     // Only Admin and Supervisor can toggle the lock switch
      return user.role === 'admin' || user.role === 'supervisor'; 
   }, [user]);
 
@@ -230,7 +229,10 @@ export const LocationModal: React.FC<LocationModalProps> = ({
 
             {editStatus.allowed ? (
                 <button onClick={onEdit} className="flex-1 bg-primary text-white py-3 rounded-xl font-bold flex items-center justify-center gap-2 shadow-lg shadow-blue-600/20 active:scale-95 transition-transform">
-                    <Icons.Edit /> <span className="hidden md:inline">تعديل</span>
+                    {/* If editing is allowed BUT it's locked, show unlock icon to imply override */}
+                    {formData.isLocked ? <Icons.Lock /> : <Icons.Edit />} 
+                    <span className="hidden md:inline">{formData.isLocked ? 'تعديل (تجاوز القفل)' : 'تعديل'}</span>
+                    <span className="md:hidden text-xs">{formData.isLocked ? 'تجاوز' : 'تعديل'}</span>
                 </button>
             ) : (
                 <div className="flex-1 bg-gray-200 text-gray-500 py-3 rounded-xl font-bold flex items-center justify-center gap-2 cursor-not-allowed opacity-80" title={editStatus.reason}>
