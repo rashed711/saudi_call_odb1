@@ -61,18 +61,21 @@ export const LocationModal: React.FC<LocationModalProps> = ({
   const editStatus = useMemo(() => {
       if (mode === 'create') return { allowed: true, reason: '' };
       
-      // 1. Check DB Lock (القفل الإداري)
-      // إذا كان الموقع مقفلاً، فقط الأدمن أو المشرف يمكنه التعديل
-      if (formData.isLocked && user.role !== 'admin' && user.role !== 'supervisor') {
-          return { allowed: false, reason: 'مقفل إدارياً' };
-      }
-
-      // 2. Check RBAC Permissions (صلاحيات الدور)
+      // التغيير الجوهري هنا:
+      // لقد أزلنا الحظر المعتمد على "isLocked".
+      // الآن نعتمد كلياً على checkPermission (نظام الصلاحيات الذي تديره أنت).
+      // إذا منحت المندوب صلاحية "تعديل" (سواء الكل أو فريقه)، سيتجاوز القفل.
+      
+      // 1. Check RBAC Permissions (صلاحيات الدور)
       const hasPerm = checkPermission(user, 'odb', 'edit', formData.ownerId);
+      
       if (!hasPerm) {
-          return { allowed: false, reason: 'للمالك فقط' }; // أو خارج الصلاحية
+          // إذا لم يكن لديه صلاحية، نظهر السبب
+          if (formData.isLocked) return { allowed: false, reason: 'مقفل / لا توجد صلاحية' };
+          return { allowed: false, reason: 'للمالك أو المشرف فقط' };
       }
 
+      // إذا كان لديه صلاحية، نسمح له بالتعديل
       return { allowed: true, reason: '' };
   }, [formData, user, mode]);
 
@@ -271,7 +274,7 @@ export const LocationModal: React.FC<LocationModalProps> = ({
                 <div className="bg-purple-50 border border-purple-100 p-4 rounded-xl flex items-center justify-between">
                     <div>
                         <span className="block text-xs font-bold text-purple-800">حالة القفل (Lock)</span>
-                        <span className="text-[10px] text-purple-600">عند التفعيل، لن يتمكن المندوب من التعديل</span>
+                        <span className="text-[10px] text-purple-600">عند التفعيل، لن يتمكن المندوب (بدون صلاحية خاصة) من التعديل</span>
                     </div>
                     <label className="relative inline-flex items-center cursor-pointer">
                         <input type="checkbox" checked={formData.isLocked || false} onChange={(e) => setFormData({...formData, isLocked: e.target.checked})} className="sr-only peer" />
