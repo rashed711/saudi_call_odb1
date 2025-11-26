@@ -140,11 +140,16 @@ const UserManagement: React.FC = () => {
       // CRITICAL FIX: Find the selected role definition to embed its permissions
       // This ensures that the specific permissions configured for this role are saved WITH the user
       // so they propagate to the user's device immediately, overriding any local defaults.
-      const selectedRoleDef = roles.find(r => r.id === editingUser.role);
       
+      // Ensure we find the role ID case-insensitive or exact
+      const selectedRoleDef = roles.find(r => r.id === editingUser.role) || roles.find(r => r.id === 'delegate');
+      
+      // Create permission snapshot
+      const permissionsSnapshot = selectedRoleDef ? selectedRoleDef.permissions : [];
+
       const userToSave: User = {
           ...(editingUser as User),
-          permissions: selectedRoleDef ? selectedRoleDef.permissions : []
+          permissions: permissionsSnapshot
       };
 
       await saveUser(userToSave);

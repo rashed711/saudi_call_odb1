@@ -76,21 +76,23 @@ export const getRoles = (): RoleDefinition[] => {
     
     const storedMap = new Map(storedRoles.map(r => [r.id, r]));
 
-    const finalRoles = SYSTEM_ROLES.map(sysRole => {
+    // Merge logic: Start with System Roles. If LocalStorage has an override for a system role, use it.
+    const mergedRoles = SYSTEM_ROLES.map(sysRole => {
         if (storedMap.has(sysRole.id)) {
             return { ...storedMap.get(sysRole.id)!, isSystem: true }; 
         }
         return sysRole;
     });
 
+    // Add any custom roles created by user that are NOT system roles
     const systemIds = new Set(SYSTEM_ROLES.map(r => r.id));
     storedRoles.forEach(r => {
         if (!systemIds.has(r.id)) {
-            finalRoles.push(r);
+            mergedRoles.push(r);
         }
     });
 
-    return finalRoles;
+    return mergedRoles;
 };
 
 export const saveRole = (role: RoleDefinition) => {
@@ -212,6 +214,9 @@ export const checkPermission = (user: User | null, resource: PermissionResource,
     if (!user) return false;
     if (user.username === 'admin') return true;
 
+    // Defensive check: Ensure permissions exist
+    if (!user.permissions || !Array.isArray(user.permissions)) return false;
+
     const perm = user.permissions.find(p => p.resource === resource && p.action === action);
     if (!perm) return false;
 
@@ -248,6 +253,29 @@ const isSubordinate = (supervisor: User, targetId: number): boolean => {
     return true; 
 };
 
+// Helper to resolve permissions (DB > Local Role > System Default)
+const resolveUserPermissions = (userRole: string, dbPermissions: any): Permission[] => {
+    // 1. If DB has specific permissions saved for this user, use them.
+    if (dbPermissions && Array.isArray(dbPermissions) && dbPermissions.length > 0) {
+        return dbPermissions;
+    }
+
+    // 2. Try to get Role from Local Storage or System Roles (using the updated getRoles which merges them)
+    const roles = getRoles();
+    const roleDef = roles.find(r => r.id === userRole);
+
+    if (roleDef) {
+        return roleDef.permissions;
+    }
+
+    // 3. Fallback: Directly access SYSTEM_ROLES if something went wrong with getRoles()
+    const systemFallback = SYSTEM_ROLES.find(r => r.id === userRole);
+    if (systemFallback) return systemFallback.permissions;
+
+    // 4. Ultimate Fallback: Delegate defaults
+    return SYSTEM_ROLES.find(r => r.id === 'delegate')!.permissions;
+};
+
 export const mockLogin = async (username: string, pass: string, deviceId?: string): Promise<User> => {
     const finalDeviceId = deviceId || getDeviceFingerprint();
     const payload = { username, password: pass, deviceId: finalDeviceId };
@@ -258,19 +286,8 @@ export const mockLogin = async (username: string, pass: string, deviceId?: strin
     finalUser.supervisorId = finalUser.supervisorId ? Number(finalUser.supervisorId) : null;
     finalUser.isActive = finalUser.isActive == 1 || finalUser.isActive === true;
 
-    // Load dynamic permissions: Prioritize DB permissions if they exist
-    // This allows Admin to save custom permissions to the user record which override local role defaults
-    if (finalUser.permissions && Array.isArray(finalUser.permissions) && finalUser.permissions.length > 0) {
-        // Permissions came from DB, do nothing (keep them)
-    } else {
-        // Fallback to role definition from local or system defaults
-        const roleDef = getRoleById(finalUser.role);
-        if (roleDef) {
-            finalUser.permissions = roleDef.permissions;
-        } else {
-            finalUser.permissions = SYSTEM_ROLES.find(r => r.id === 'delegate')?.permissions || [];
-        }
-    }
+    // Resolve Permissions robustly
+    finalUser.permissions = resolveUserPermissions(finalUser.role, finalUser.permissions);
 
     if (finalUser.username === 'admin') {
         finalUser.role = 'admin';
@@ -301,12 +318,8 @@ export const refreshUserSession = async (userId: number): Promise<User | null> =
         const rawUser = allUsers.find((u: any) => Number(u.id) === userId);
         if (!rawUser) return null;
 
-        // Logic to determine permissions: DB > Local Role > Default
-        let userPerms = rawUser.permissions;
-        if (!userPerms || !Array.isArray(userPerms) || userPerms.length === 0) {
-             const roleDef = getRoleById(rawUser.role) || SYSTEM_ROLES.find(r => r.id === 'delegate')!;
-             userPerms = roleDef.permissions;
-        }
+        // Robust Permission Resolution
+        const userPerms = resolveUserPermissions(rawUser.role, rawUser.permissions);
         
         const freshUser: User = {
             id: Number(rawUser.id),
@@ -357,11 +370,8 @@ export const applySiteSettings = (settings: SiteSettings) => {
 export const getUsers = async (currentUser: User): Promise<User[]> => {
     const allUsers = await apiRequest('get_users');
     let usersList = allUsers.map((u: any) => {
-        // Resolve permissions for listing: DB > Role
-        let perms = u.permissions;
-        if (!perms || !Array.isArray(perms) || perms.length === 0) {
-             perms = getRoleById(u.role)?.permissions || [];
-        }
+        // Use the same robust resolution for the list view
+        const perms = resolveUserPermissions(u.role, u.permissions);
 
         return {
             ...u,
