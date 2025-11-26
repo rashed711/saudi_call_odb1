@@ -1,10 +1,9 @@
 
 import React, { useState, useEffect } from 'react';
 import { User, RoleDefinition, PermissionResource, PermissionAction, PermissionScope } from '../types';
-import { getUsers, saveUser, deleteUser, toggleUserStatus, getSession, resetUserDevice, getRoles, saveRole, deleteRole } from '../services/mockBackend';
+import { getUsers, saveUser, deleteUser, toggleUserStatus, getSession, getRoles, saveRole, deleteRole } from '../services/mockBackend';
 import { Icons } from './Icons';
 
-// --- CONSTANTS ---
 const RESOURCES: { id: PermissionResource; label: string }[] = [
   { id: 'dashboard', label: 'لوحة التحكم' },
   { id: 'odb', label: 'مواقع ODB' },
@@ -37,15 +36,12 @@ const UserManagement: React.FC = () => {
   const [currentUser] = useState<User | null>(getSession());
   const [loading, setLoading] = useState(false);
   
-  // Data
   const [users, setUsers] = useState<User[]>([]);
   const [roles, setRoles] = useState<RoleDefinition[]>([]);
   
-  // Modals
   const [userModalOpen, setUserModalOpen] = useState(false);
   const [roleModalOpen, setRoleModalOpen] = useState(false);
   
-  // Edit State
   const [editingUser, setEditingUser] = useState<Partial<User>>({});
   const [editingRole, setEditingRole] = useState<Partial<RoleDefinition>>({});
 
@@ -57,13 +53,13 @@ const UserManagement: React.FC = () => {
     if (!currentUser) return;
     setLoading(true);
     try {
-        // Always load roles first to use them for users
-        const r = getRoles();
+        // Fetch roles fresh from server
+        const r = await getRoles();
         setRoles(r);
 
         if (activeTab === 'users') {
             const u = await getUsers(currentUser);
-            setUsers(u.filter(x => x.username !== 'admin')); // Hide super admin
+            setUsers(u.filter(x => x.username !== 'admin')); 
         }
     } catch(e) { console.error(e); } 
     finally { setLoading(false); }
@@ -72,7 +68,7 @@ const UserManagement: React.FC = () => {
   // --- ROLE HANDLERS ---
   const handleEditRole = (role?: RoleDefinition) => {
       if (role) {
-          setEditingRole(JSON.parse(JSON.stringify(role))); // Deep copy
+          setEditingRole(JSON.parse(JSON.stringify(role))); 
       } else {
           setEditingRole({
               id: `role_${Date.now()}`,
@@ -84,27 +80,36 @@ const UserManagement: React.FC = () => {
       setRoleModalOpen(true);
   };
 
-  const handleSaveRole = () => {
+  const handleSaveRole = async () => {
       if (!editingRole.name) return alert("الاسم مطلوب");
-      saveRole(editingRole as RoleDefinition);
-      setRoleModalOpen(false);
-      loadData();
+      setLoading(true);
+      try {
+          await saveRole(editingRole as RoleDefinition);
+          alert("تم حفظ الصلاحيات والدور بنجاح");
+          setRoleModalOpen(false);
+          await loadData(); // Reload to sync UI with DB
+      } catch (e) {
+          alert("حدث خطأ أثناء الحفظ");
+      } finally {
+          setLoading(false);
+      }
   };
 
-  const handleDeleteRole = (id: string) => {
+  const handleDeleteRole = async (id: string) => {
       if(window.confirm("حذف الدور؟")) {
-          deleteRole(id);
-          loadData();
+          setLoading(true);
+          await deleteRole(id);
+          await loadData();
+          setLoading(false);
       }
   };
 
   const updateRolePerm = (resource: PermissionResource, action: PermissionAction, scope: PermissionScope) => {
       setEditingRole(prev => {
           const currentPerms = prev.permissions || [];
-          // Remove existing for this resource+action
           const filtered = currentPerms.filter(p => !(p.resource === resource && p.action === action));
-          // Add new if not none (or allow none to be explicit, let's keep it clean)
-          // Actually, we store everything to be explicit
+          // Only add if scope is NOT none, or keep it to track explicit 'none' if preferred.
+          // For now, we push everything so state tracks the UI correctly.
           filtered.push({ resource, action, scope });
           return { ...prev, permissions: filtered };
       });
@@ -137,24 +142,16 @@ const UserManagement: React.FC = () => {
   const handleSaveUser = async () => {
       if (!editingUser.username || !editingUser.name) return alert("بيانات ناقصة");
       
-      // CRITICAL FIX: Find the selected role definition to embed its permissions
-      // This ensures that the specific permissions configured for this role are saved WITH the user
-      // so they propagate to the user's device immediately, overriding any local defaults.
-      
-      // Ensure we find the role ID case-insensitive or exact
-      const selectedRoleDef = roles.find(r => r.id === editingUser.role) || roles.find(r => r.id === 'delegate');
-      
-      // Create permission snapshot
-      const permissionsSnapshot = selectedRoleDef ? selectedRoleDef.permissions : [];
-
       const userToSave: User = {
           ...(editingUser as User),
-          permissions: permissionsSnapshot
+          permissions: [] // Send empty to force inheritance from Role in DB
       };
 
+      setLoading(true);
       await saveUser(userToSave);
       setUserModalOpen(false);
-      loadData();
+      await loadData();
+      setLoading(false);
   };
 
   const handleDeleteUser = async (id: number) => {
@@ -166,25 +163,17 @@ const UserManagement: React.FC = () => {
 
   return (
     <div className="space-y-6 pb-20">
-        {/* Tabs */}
         <div className="flex bg-white p-1 rounded-xl shadow-sm border border-gray-100 w-fit">
-            <button 
-                onClick={() => setActiveTab('users')} 
-                className={`px-6 py-2 rounded-lg text-sm font-bold transition-all ${activeTab === 'users' ? 'bg-blue-50 text-blue-700' : 'text-gray-500 hover:text-gray-700'}`}
-            >
+            <button onClick={() => setActiveTab('users')} className={`px-6 py-2 rounded-lg text-sm font-bold transition-all ${activeTab === 'users' ? 'bg-blue-50 text-blue-700' : 'text-gray-500 hover:text-gray-700'}`}>
                 <span className="flex items-center gap-2"><Icons.Users /> المستخدمين</span>
             </button>
-            <button 
-                onClick={() => setActiveTab('roles')} 
-                className={`px-6 py-2 rounded-lg text-sm font-bold transition-all ${activeTab === 'roles' ? 'bg-purple-50 text-purple-700' : 'text-gray-500 hover:text-gray-700'}`}
-            >
+            <button onClick={() => setActiveTab('roles')} className={`px-6 py-2 rounded-lg text-sm font-bold transition-all ${activeTab === 'roles' ? 'bg-purple-50 text-purple-700' : 'text-gray-500 hover:text-gray-700'}`}>
                 <span className="flex items-center gap-2"><Icons.Shield /> الأدوار والصلاحيات</span>
             </button>
         </div>
 
-        {/* --- USERS TAB --- */}
         {activeTab === 'users' && (
-            <div className="space-y-4">
+            <div className="space-y-4 animate-in fade-in">
                  <div className="flex justify-between items-center">
                     <h3 className="text-lg font-bold text-gray-800">قائمة الفريق</h3>
                     <button onClick={() => handleEditUser()} className="bg-primary text-white px-4 py-2 rounded-lg font-bold text-xs flex items-center gap-2">
@@ -215,9 +204,8 @@ const UserManagement: React.FC = () => {
             </div>
         )}
 
-        {/* --- ROLES TAB --- */}
         {activeTab === 'roles' && (
-             <div className="space-y-4">
+             <div className="space-y-4 animate-in fade-in">
                 <div className="flex justify-between items-center">
                    <h3 className="text-lg font-bold text-gray-800">الأدوار المتاحة</h3>
                    <button onClick={() => handleEditRole()} className="bg-purple-600 text-white px-4 py-2 rounded-lg font-bold text-xs flex items-center gap-2">
@@ -244,7 +232,7 @@ const UserManagement: React.FC = () => {
                                     <td className="px-6 py-4 text-center flex justify-center gap-2">
                                         <button onClick={() => handleEditRole(r)} className="text-blue-600 hover:bg-blue-50 p-2 rounded"><Icons.Edit /></button>
                                         {!r.isSystem && <button onClick={() => handleDeleteRole(r.id)} className="text-red-600 hover:bg-red-50 p-2 rounded"><Icons.Trash /></button>}
-                                        {r.isSystem && <button disabled className="text-gray-300 p-2 cursor-not-allowed" title="لا يمكن حذف دور أساسي"><Icons.Trash /></button>}
+                                        {r.isSystem && <button onClick={() => handleDeleteRole(r.id)} disabled={true} className="text-gray-300 p-2 cursor-not-allowed opacity-50"><Icons.Trash /></button>}
                                     </td>
                                 </tr>
                             ))}
@@ -254,7 +242,6 @@ const UserManagement: React.FC = () => {
            </div>
         )}
 
-        {/* --- USER MODAL --- */}
         {userModalOpen && (
              <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm p-4">
                 <div className="bg-white rounded-2xl w-full max-w-lg p-6 shadow-2xl animate-in zoom-in-95">
@@ -270,7 +257,7 @@ const UserManagement: React.FC = () => {
                                 {roles.map(r => <option key={r.id} value={r.id}>{r.name}</option>)}
                             </select>
                         </div>
-
+                        
                         <div className="flex justify-between items-center bg-gray-50 p-3 rounded-xl">
                             <span className="text-sm font-bold">حالة الحساب</span>
                             <button onClick={() => setEditingUser({...editingUser, isActive: !editingUser.isActive})} className={`px-3 py-1 rounded text-xs font-bold ${editingUser.isActive ? 'bg-green-100 text-green-700' : 'bg-red-100 text-red-700'}`}>
@@ -279,7 +266,7 @@ const UserManagement: React.FC = () => {
                         </div>
                     </div>
                     <div className="mt-6 flex gap-3">
-                        <button onClick={handleSaveUser} className="flex-1 bg-primary text-white py-3 rounded-xl font-bold">حفظ</button>
+                        <button onClick={handleSaveUser} disabled={loading} className="flex-1 bg-primary text-white py-3 rounded-xl font-bold">{loading ? '...' : 'حفظ'}</button>
                         <button onClick={() => setUserModalOpen(false)} className="flex-1 bg-gray-100 text-gray-600 py-3 rounded-xl font-bold">إلغاء</button>
                     </div>
                     {editingUser.id !== 0 && (
@@ -289,7 +276,6 @@ const UserManagement: React.FC = () => {
              </div>
         )}
 
-        {/* --- ROLE MATRIX MODAL (THE CORE REQUEST) --- */}
         {roleModalOpen && (
             <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/50 backdrop-blur-sm p-2 md:p-6">
                 <div className="bg-white rounded-2xl w-full max-w-5xl h-[90vh] flex flex-col shadow-2xl animate-in zoom-in-95">
@@ -302,13 +288,7 @@ const UserManagement: React.FC = () => {
 
                     <div className="p-4 border-b bg-white">
                         <label className="text-xs font-bold text-gray-500 block mb-1">اسم الدور</label>
-                        <input 
-                            type="text" 
-                            value={editingRole.name} 
-                            onChange={e => setEditingRole({...editingRole, name: e.target.value})}
-                            className="w-full md:w-1/3 p-2 border rounded-lg focus:ring-2 focus:ring-purple-500"
-                            placeholder="مثال: مراجع مالي"
-                        />
+                        <input type="text" value={editingRole.name} onChange={e => setEditingRole({...editingRole, name: e.target.value})} className="w-full md:w-1/3 p-2 border rounded-lg focus:ring-2 focus:ring-purple-500" placeholder="مثال: مراجع مالي" />
                     </div>
 
                     <div className="flex-1 overflow-auto p-4 bg-gray-50">
@@ -318,7 +298,6 @@ const UserManagement: React.FC = () => {
                                 <span>تنبيه: أنت تقوم بتعديل دور أساسي في النظام. التعديلات ستطبق فوراً على جميع المستخدمين المرتبطين بهذا الدور.</span>
                             </div>
                         )}
-                        
                         <div className="bg-white rounded-xl shadow-sm border border-gray-200 overflow-hidden">
                             <table className="w-full text-center border-collapse">
                                 <thead className="bg-gray-100 text-xs text-gray-600 sticky top-0 z-10 shadow-sm">
@@ -333,9 +312,7 @@ const UserManagement: React.FC = () => {
                                             <td className="p-3 text-right font-bold text-gray-700 bg-gray-50/50 sticky right-0 border-l z-10">{res.label}</td>
                                             {ACTIONS.map(act => {
                                                 const currentScope = getScope(res.id, act.id);
-                                                // Disable specific illogical combos
                                                 if (res.id === 'dashboard' && act.id !== 'view') return <td key={act.id} className="bg-gray-100/50"></td>;
-                                                
                                                 return (
                                                     <td key={act.id} className="p-2 border-l last:border-l-0">
                                                         <select 
@@ -362,8 +339,8 @@ const UserManagement: React.FC = () => {
 
                     <div className="p-4 border-t bg-white rounded-b-2xl flex justify-end gap-3">
                          <button onClick={() => setRoleModalOpen(false)} className="px-6 py-2 rounded-xl font-bold text-gray-600 hover:bg-gray-100">إغلاق</button>
-                         <button onClick={handleSaveRole} className="px-6 py-2 rounded-xl font-bold bg-purple-600 text-white hover:bg-purple-700 shadow-lg shadow-purple-500/20">
-                             حفظ التغييرات
+                         <button onClick={handleSaveRole} disabled={loading} className="px-6 py-2 rounded-xl font-bold bg-purple-600 text-white hover:bg-purple-700 shadow-lg shadow-purple-500/20">
+                             {loading ? 'جاري الحفظ...' : 'حفظ التغييرات'}
                          </button>
                     </div>
                 </div>
