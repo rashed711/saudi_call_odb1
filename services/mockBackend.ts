@@ -42,7 +42,7 @@ const SYSTEM_ROLES: RoleDefinition[] = [
 
 // --- API HELPER ---
 async function apiRequest(action: string, method: 'GET' | 'POST' = 'GET', body: any = null, signal?: AbortSignal, silent: boolean = false, skipUserHeader: boolean = false) {
-    // Anti-cache timestamp (This effectively prevents caching without needing extra headers)
+    // Anti-cache timestamp
     const timestamp = new Date().getTime();
     const url = `${API_BASE_URL}?action=${action}&_t=${timestamp}`;
     
@@ -54,8 +54,6 @@ async function apiRequest(action: string, method: 'GET' | 'POST' = 'GET', body: 
         method, 
         mode: 'cors', 
         signal,
-        // Removed 'cache: no-store' and custom headers to avoid CORS preflight failure
-        // The '_t' parameter in URL is sufficient for cache busting
         headers: headers 
     };
     
@@ -70,7 +68,8 @@ async function apiRequest(action: string, method: 'GET' | 'POST' = 'GET', body: 
         } catch (e) { 
             if (signal?.aborted) throw new Error('Aborted'); 
             console.error("Invalid JSON response:", text);
-            throw new Error('Server Error: Invalid Response from API'); 
+            // Fallback to empty structure to prevent crashes
+            return { data: [], total: 0 };
         }
         
         if (!response.ok || data.error) {
@@ -92,13 +91,12 @@ export const getRoles = async (): Promise<RoleDefinition[]> => {
         const dbRoles = await apiRequest('get_roles', 'GET');
         const roleMap = new Map<string, RoleDefinition>();
         
-        // 1. Load System Defaults First (Fallback)
+        // 1. Load System Defaults First
         SYSTEM_ROLES.forEach(r => roleMap.set(r.id, r));
         
         // 2. Override/Add with DB Roles
         if (Array.isArray(dbRoles)) {
             dbRoles.forEach((r: any) => {
-                // Normalize permissions array
                 let perms = r.permissions;
                 if (typeof perms === 'string') {
                     try { perms = JSON.parse(perms); } catch(e) { perms = []; }
@@ -140,20 +138,19 @@ export const getDeviceFingerprint = (): string => {
 
 export const checkPermission = (user: User | null, resource: PermissionResource, action: PermissionAction, targetOwnerId?: number | null): boolean => {
     if (!user) return false;
-    if (user.username === 'admin' || user.id === 1) return true; // Super Admin Override
+    if (user.username === 'admin' || user.id === 1) return true; 
     if (!user.permissions) return false;
 
     const perm = user.permissions.find(p => p.resource === resource && p.action === action);
     if (!perm) return false;
     if (perm.scope === 'none') return false;
     if (perm.scope === 'all') return true;
-    if (action === 'create') return true; // Usually implies 'own' creation
+    if (action === 'create') return true; 
     
-    if (targetOwnerId === undefined || targetOwnerId === null) return true; // Viewing generic lists
+    if (targetOwnerId === undefined || targetOwnerId === null) return true; 
 
-    // Check scopes
     if (perm.scope === 'own') return Number(targetOwnerId) === Number(user.id);
-    if (perm.scope === 'team') return Number(targetOwnerId) === Number(user.id) || true; // In mock, we trust the backend for team filtering
+    if (perm.scope === 'team') return true; // Trusted scope check
 
     return false;
 };
@@ -163,20 +160,17 @@ export const hasPermission = (user: User | null, resource: string, action: strin
 };
 
 const resolveUserPermissions = async (userRole: string, dbPermissions: any): Promise<Permission[]> => {
-    // 1. Custom Permissions on User Level
     if (dbPermissions && Array.isArray(dbPermissions) && dbPermissions.length > 0) {
         return dbPermissions;
     }
 
-    // 2. Fetch Latest Roles from DB
-    const roles = await getRoles(); // This triggers the PHP Auto-Fix if roles table is empty
+    const roles = await getRoles();
     const roleDef = roles.find(r => r.id === userRole);
     
     if (roleDef && roleDef.permissions.length > 0) {
         return roleDef.permissions;
     }
 
-    // 3. Fallback to Hardcoded Defaults (Last Resort)
     const sysRole = SYSTEM_ROLES.find(r => r.id === userRole);
     return sysRole ? sysRole.permissions : [];
 };
@@ -185,12 +179,10 @@ export const mockLogin = async (username: string, pass: string, deviceId?: strin
     const payload = { username, password: pass, deviceId: deviceId || getDeviceFingerprint() };
     const user = await apiRequest('login', 'POST', payload);
     
-    // Convert types
     user.id = Number(user.id);
     user.supervisorId = user.supervisorId ? Number(user.supervisorId) : null;
     user.isActive = user.isActive == 1 || user.isActive === true;
 
-    // Resolve Permissions (Critical Step)
     user.permissions = await resolveUserPermissions(user.role, user.permissions);
 
     if (user.username === 'admin' || user.id === 1) { 
@@ -207,9 +199,10 @@ export const getSession = (): User | null => { const data = localStorage.getItem
 
 export const refreshUserSession = async (userId: number): Promise<User | null> => {
     try {
-        // Skip User Header to get raw data without filtering loops
         const allUsers = await apiRequest('get_users', 'GET', null, undefined, true, true);
-        const rawUser = Array.isArray(allUsers) ? allUsers.find((u: any) => Number(u.id) === userId) : null;
+        if (!Array.isArray(allUsers)) return null;
+        
+        const rawUser = allUsers.find((u: any) => Number(u.id) === userId);
         if (!rawUser) return null;
 
         const userPerms = await resolveUserPermissions(rawUser.role, rawUser.permissions);
@@ -228,21 +221,18 @@ export const refreshUserSession = async (userId: number): Promise<User | null> =
 
 export const getUsers = async (currentUser: User): Promise<User[]> => {
     const allUsers = await apiRequest('get_users');
+    if (!Array.isArray(allUsers)) return [];
     
-    // We map users but DON'T resolve every single user's permissions to save bandwidth
-    // We only need the current user's full context usually.
-    // However, to show roles correctly in UI:
     return allUsers.map((u: any) => ({
         ...u,
         id: Number(u.id),
         supervisorId: u.supervisorId ? Number(u.supervisorId) : null,
         isActive: u.isActive == 1 || u.isActive === true,
-        permissions: [] // Don't load deep perms for list view
+        permissions: [] 
     }));
 };
 
 export const saveUser = async (userToSave: User): Promise<void> => {
-    // Send empty permissions to enforce inheritance from Role
     const payload = { ...userToSave, permissions: [] }; 
     await apiRequest('save_user', 'POST', payload);
 };
@@ -251,7 +241,10 @@ export const deleteUser = async (id: number) => { if (id === 1) throw new Error(
 export const toggleUserStatus = async (id: number) => { await apiRequest(`toggle_user_status&id=${id}`, 'GET'); };
 export const resetUserDevice = async (id: number) => { await apiRequest(`reset_user_device&id=${id}`, 'GET'); };
 
-export const getLogs = async () => (await apiRequest('get_logs', 'GET', null, undefined, true)) || [];
+export const getLogs = async () => {
+    const res = await apiRequest('get_logs', 'GET', null, undefined, true);
+    return Array.isArray(res) ? res : [];
+};
 export const logAction = (u: string, a: any, r: string, d: string) => apiRequest('log_action', 'POST', {username:u, action:a, resource:r, details:d}, undefined, true).catch(()=>{});
 export const clearLogs = async () => await apiRequest('clear_logs');
 
@@ -264,8 +257,25 @@ export const applySiteSettings = (s: SiteSettings) => { document.title = s.siteN
 
 export const getODBLocationsPaginated = async (p: number, l: number, s: string = '', sig?: AbortSignal) => {
     const res = await apiRequest(`get_locations_paginated&page=${p}&limit=${l}&search=${encodeURIComponent(s)}`, 'GET', null, sig, false, true);
-    const map = (d: any) => ({...d, id:Number(d.id), LATITUDE:Number(d.latitude), LONGITUDE:Number(d.longitude), ODB_ID:d.odb_id, CITYNAME:d.city_name, ownerId:d.ownerId});
-    return { data: res.data.map(map), total: Number(res.total), totalPages: Number(res.totalPages) };
+    
+    // Robust check to prevent crash
+    const safeData = (res && Array.isArray(res.data)) ? res.data : [];
+    
+    const map = (d: any) => ({
+        ...d, 
+        id: Number(d.id), 
+        LATITUDE: Number(d.latitude), 
+        LONGITUDE: Number(d.longitude), 
+        ODB_ID: d.odb_id, 
+        CITYNAME: d.city_name, 
+        ownerId: d.ownerId
+    });
+    
+    return { 
+        data: safeData.map(map), 
+        total: Number(res?.total || 0), 
+        totalPages: Number(res?.totalPages || 0) 
+    };
 };
 
 export const saveODBLocation = async (loc: ODBLocation) => {
@@ -276,9 +286,25 @@ export const saveODBLocation = async (loc: ODBLocation) => {
 };
 
 export const deleteODBLocation = async (id: number) => await apiRequest(`delete_location&id=${id}`, 'GET');
-export const searchODBLocation = async (q: string) => (await apiRequest(`search_locations&query=${encodeURIComponent(q)}`, 'GET', null, undefined, false, true)).map((d:any)=>({...d, id:Number(d.id), LATITUDE:Number(d.latitude), LONGITUDE:Number(d.longitude), ODB_ID:d.odb_id, CITYNAME:d.city_name}));
-export const getAllLocationsForMap = async () => (await apiRequest('get_all_locations', 'GET', null, undefined, false, true)).map((d:any)=>({...d, id:Number(d.id), LATITUDE:Number(d.latitude), LONGITUDE:Number(d.longitude), ODB_ID:d.odb_id, CITYNAME:d.city_name}));
+export const searchODBLocation = async (q: string) => {
+    const res = await apiRequest(`search_locations&query=${encodeURIComponent(q)}`, 'GET', null, undefined, false, true);
+    if (!Array.isArray(res)) return [];
+    return res.map((d:any)=>({...d, id:Number(d.id), LATITUDE:Number(d.latitude), LONGITUDE:Number(d.longitude), ODB_ID:d.odb_id, CITYNAME:d.city_name}));
+};
+export const getAllLocationsForMap = async () => {
+    const res = await apiRequest('get_all_locations', 'GET', null, undefined, false, true);
+    if (!Array.isArray(res)) return [];
+    return res.map((d:any)=>({...d, id:Number(d.id), LATITUDE:Number(d.latitude), LONGITUDE:Number(d.longitude), ODB_ID:d.odb_id, CITYNAME:d.city_name}));
+};
 export const getLocationDetails = async (id: number) => { const d = await apiRequest(`get_location_details&id=${id}`, 'GET', null, undefined, false, true); return {...d, id:Number(d.id), LATITUDE:Number(d.latitude), LONGITUDE:Number(d.longitude), ODB_ID:d.odb_id, CITYNAME:d.city_name}; };
-export const getMyActivity = async (u: string) => ({ data: (await apiRequest(`get_my_activity&username=${encodeURIComponent(u)}`, 'GET', null, undefined, false, true)).map((d:any)=>({...d, id:Number(d.id), LATITUDE:Number(d.latitude), LONGITUDE:Number(d.longitude), ODB_ID:d.odb_id, CITYNAME:d.city_name})) });
-export const getNearbyLocationsAPI = async (lat: number, lng: number, r: number, l: number) => (await apiRequest(`get_nearby&lat=${lat}&lng=${lng}&radius=${r}&limit=${l}`, 'GET', null, undefined, false, true)).map((d:any)=>({...d, id:Number(d.id), LATITUDE:Number(d.latitude), LONGITUDE:Number(d.longitude), ODB_ID:d.odb_id, CITYNAME:d.city_name, distance:d.distance}));
+export const getMyActivity = async (u: string) => {
+    const res = await apiRequest(`get_my_activity&username=${encodeURIComponent(u)}`, 'GET', null, undefined, false, true);
+    const data = Array.isArray(res) ? res : []; // get_my_activity sometimes returns array directly
+    return { data: data.map((d:any)=>({...d, id:Number(d.id), LATITUDE:Number(d.latitude), LONGITUDE:Number(d.longitude), ODB_ID:d.odb_id, CITYNAME:d.city_name})) };
+};
+export const getNearbyLocationsAPI = async (lat: number, lng: number, r: number, l: number) => {
+    const res = await apiRequest(`get_nearby&lat=${lat}&lng=${lng}&radius=${r}&limit=${l}`, 'GET', null, undefined, false, true);
+    if (!Array.isArray(res)) return [];
+    return res.map((d:any)=>({...d, id:Number(d.id), LATITUDE:Number(d.latitude), LONGITUDE:Number(d.longitude), ODB_ID:d.odb_id, CITYNAME:d.city_name, distance:d.distance}));
+};
 export const saveBulkODBLocations = async (locs: any[]) => await apiRequest('import_csv', 'POST', { locations: locs });

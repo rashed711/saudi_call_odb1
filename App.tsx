@@ -62,7 +62,7 @@ const App: React.FC = () => {
                 if (permsChanged || roleChanged) {
                     console.log("Permissions updated remotely");
                     setUser(freshUser);
-                    localStorage.setItem('odb_user_session_v3_perm', JSON.stringify(freshUser));
+                    localStorage.setItem('odb_user_session_v6_final', JSON.stringify(freshUser));
                 }
             }
         } catch (e: any) {

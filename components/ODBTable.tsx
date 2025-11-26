@@ -47,20 +47,30 @@ const ODBTable: React.FC<ODBTableProps> = ({ user }) => {
       setErrorMsg(null);
       try {
           const result = await getODBLocationsPaginated(page, limit, debouncedSearch, signal);
+          
+          // Safety check for result.data
+          if (!result || !Array.isArray(result.data)) {
+              setLocations([]);
+              setTotalItems(0);
+              setTotalPages(0);
+              return;
+          }
+
           // Filter duplicates locally if any slip through
           const uniqueLocations = result.data.filter((loc, index, self) => 
              index === self.findIndex((t) => (t.ODB_ID === loc.ODB_ID))
           );
           setLocations(uniqueLocations);
-          setTotalItems(result.total);
-          setTotalPages(result.totalPages);
+          setTotalItems(result.total || 0);
+          setTotalPages(result.totalPages || 0);
       } catch (error: any) {
           // Ignore abort errors explicitly
           if (error.name === 'AbortError' || error.message === 'Aborted') {
               return;
           }
           console.error("Error fetching locations:", error);
-          setErrorMsg(error.message);
+          setErrorMsg(error.message || "حدث خطأ في جلب البيانات");
+          setLocations([]); 
       } finally {
            if (!signal?.aborted) setLoading(false);
       }
@@ -241,7 +251,7 @@ const ODBTable: React.FC<ODBTableProps> = ({ user }) => {
           </thead>
           <tbody>
             {loading ? ( <tr><td colSpan={3} className="text-center py-20">...</td></tr> ) : 
-             locations.length === 0 && !errorMsg ? ( <tr><td colSpan={3} className="text-center py-20 text-gray-400">لا توجد نتائج</td></tr> ) :
+             locations.length === 0 ? ( <tr><td colSpan={3} className="text-center py-20 text-gray-400">{errorMsg ? 'حدث خطأ في التحميل' : 'لا توجد نتائج'}</td></tr> ) :
              locations.map((loc) => (
                 <tr key={loc.id} onClick={() => handleRowClick(loc)} className={`border-b border-gray-50 cursor-pointer hover:bg-gray-50 ${selectedIds.includes(loc.id) ? 'bg-blue-50' : ''}`}>
                     <td className="py-3 px-4 text-center" onClick={(e) => e.stopPropagation()}><input type="checkbox" checked={selectedIds.includes(loc.id)} onChange={(e) => { e.stopPropagation(); handleSelectRow(loc.id); }} /></td>
