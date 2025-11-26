@@ -2,11 +2,10 @@
 import { ODBLocation, User, SiteSettings, NearbyLocation, Permission, SystemLog, RoleDefinition, PermissionResource, PermissionAction, PermissionScope } from '../types';
 
 const API_BASE_URL = 'https://start.enjaz.cloud/api/api.php'; 
-const STORAGE_KEY_USER_SESSION = 'odb_user_session_v5_rbac_db'; 
+const STORAGE_KEY_USER_SESSION = 'odb_user_session_v6_final'; 
 const STORAGE_KEY_DEVICE_ID = 'odb_device_id_fingerprint';
 
-// --- INITIAL ROLES SETUP (CONSTANTS) ---
-// Used only for initialization if DB is empty
+// --- INITIAL ROLES SETUP (Fallback) ---
 const ALL_RESOURCES: PermissionResource[] = ['dashboard', 'odb', 'nearby', 'users', 'settings', 'my_activity', 'map_filter', 'search_odb', 'system_logs', 'roles'];
 const ACTIONS: PermissionAction[] = ['view', 'create', 'edit', 'delete', 'export'];
 
@@ -41,32 +40,76 @@ const SYSTEM_ROLES: RoleDefinition[] = [
     ]}
 ];
 
-// --- ROLE MANAGEMENT SERVICE (ASYNC API) ---
+// --- API HELPER ---
+async function apiRequest(action: string, method: 'GET' | 'POST' = 'GET', body: any = null, signal?: AbortSignal, silent: boolean = false, skipUserHeader: boolean = false) {
+    // Anti-cache timestamp (This effectively prevents caching without needing extra headers)
+    const timestamp = new Date().getTime();
+    const url = `${API_BASE_URL}?action=${action}&_t=${timestamp}`;
+    
+    const user = getSession();
+    const headers: any = { 'Content-Type': 'application/json' };
+    if (user && user.id && !skipUserHeader) headers['X-User-Id'] = user.id.toString();
+
+    const options: RequestInit = { 
+        method, 
+        mode: 'cors', 
+        signal,
+        // Removed 'cache: no-store' and custom headers to avoid CORS preflight failure
+        // The '_t' parameter in URL is sufficient for cache busting
+        headers: headers 
+    };
+    
+    if (body) options.body = JSON.stringify(body);
+
+    try {
+        const response = await fetch(url, options);
+        const text = await response.text();
+        let data;
+        try { 
+            data = JSON.parse(text); 
+        } catch (e) { 
+            if (signal?.aborted) throw new Error('Aborted'); 
+            console.error("Invalid JSON response:", text);
+            throw new Error('Server Error: Invalid Response from API'); 
+        }
+        
+        if (!response.ok || data.error) {
+            throw new Error(data.error || `Error ${response.status}`);
+        }
+        
+        return data;
+    } catch (error: any) {
+        if (error.name === 'AbortError') throw error;
+        if (!silent) console.error(`API [${action}] Failed:`, error);
+        throw error;
+    }
+}
+
+// --- ROLE MANAGEMENT SERVICE ---
 
 export const getRoles = async (): Promise<RoleDefinition[]> => {
     try {
-        // Force fresh load
         const dbRoles = await apiRequest('get_roles', 'GET');
-        
         const roleMap = new Map<string, RoleDefinition>();
         
-        // 1. Add System Roles first as baseline
+        // 1. Load System Defaults First (Fallback)
         SYSTEM_ROLES.forEach(r => roleMap.set(r.id, r));
         
         // 2. Override/Add with DB Roles
         if (Array.isArray(dbRoles)) {
             dbRoles.forEach((r: any) => {
-                // Ensure permissions is an array
+                // Normalize permissions array
                 let perms = r.permissions;
                 if (typeof perms === 'string') {
                     try { perms = JSON.parse(perms); } catch(e) { perms = []; }
                 }
-                
+                if (!Array.isArray(perms)) perms = [];
+
                 roleMap.set(r.id, {
-                    id: r.role_id || r.id, // Handle DB column name difference
+                    id: r.role_id || r.id,
                     name: r.name,
-                    isSystem: r.isSystem,
-                    permissions: Array.isArray(perms) ? perms : []
+                    isSystem: r.isSystem || r.isSystem === '1',
+                    permissions: perms
                 });
             });
         }
@@ -79,53 +122,12 @@ export const getRoles = async (): Promise<RoleDefinition[]> => {
 };
 
 export const saveRole = async (role: RoleDefinition) => {
-    // Send to API
     await apiRequest('save_role', 'POST', role);
-    logAction(getSession()?.username || 'System', 'UPDATE', 'Roles', `Updated role: ${role.name}`);
 };
 
 export const deleteRole = async (roleId: string) => {
     await apiRequest(`delete_role&id=${roleId}`, 'GET');
-    logAction(getSession()?.username || 'System', 'DELETE', 'Roles', `Deleted role ID: ${roleId}`);
 };
-
-// --- API HELPER ---
-async function apiRequest(action: string, method: 'GET' | 'POST' = 'GET', body: any = null, signal?: AbortSignal, silent: boolean = false, skipUserHeader: boolean = false) {
-    // Add timestamp to prevent caching on GET requests
-    const timestamp = new Date().getTime();
-    const url = `${API_BASE_URL}?action=${action}&_t=${timestamp}`;
-    
-    const user = getSession();
-    const headers: any = { 'Content-Type': 'application/json' };
-    if (user && user.id && !skipUserHeader) headers['X-User-Id'] = user.id.toString();
-
-    const options: RequestInit = { 
-        method, 
-        headers, 
-        mode: 'cors', 
-        signal,
-        cache: 'no-store' // Critical: Prevent browser caching
-    };
-    
-    if (body) options.body = JSON.stringify(body);
-
-    try {
-        const response = await fetch(url, options);
-        const text = await response.text();
-        let data;
-        try { data = JSON.parse(text); } catch (e) { 
-            if (signal?.aborted) throw new Error('Aborted'); 
-            console.error("Invalid JSON response:", text);
-            throw new Error('Server Error: Invalid Response'); 
-        }
-        if (!response.ok || data.error) throw new Error(data.error || `Error ${response.status}`);
-        return data;
-    } catch (error: any) {
-        if (error.name === 'AbortError') throw error;
-        if (!silent) console.error(`API [${action}] Failed:`, error);
-        throw error;
-    }
-}
 
 // --- UTILS ---
 export const getDeviceFingerprint = (): string => {
@@ -138,26 +140,20 @@ export const getDeviceFingerprint = (): string => {
 
 export const checkPermission = (user: User | null, resource: PermissionResource, action: PermissionAction, targetOwnerId?: number | null): boolean => {
     if (!user) return false;
-    if (user.username === 'admin') return true;
+    if (user.username === 'admin' || user.id === 1) return true; // Super Admin Override
     if (!user.permissions) return false;
 
     const perm = user.permissions.find(p => p.resource === resource && p.action === action);
     if (!perm) return false;
     if (perm.scope === 'none') return false;
     if (perm.scope === 'all') return true;
-    if (action === 'create') return true;
+    if (action === 'create') return true; // Usually implies 'own' creation
     
-    // Fallback if targetOwnerId is missing for edit/delete checks
-    if ((action === 'edit' || action === 'delete') && (targetOwnerId === undefined || targetOwnerId === null)) {
-        // If we don't know the owner, we assume safe default (deny unless 'all')
-        // But for UI conditional rendering, we might return true to show the button (which will be disabled later)
-        return true; 
-    }
-    
-    if (targetOwnerId === undefined || targetOwnerId === null) return true; // View context often doesn't have ownerId
+    if (targetOwnerId === undefined || targetOwnerId === null) return true; // Viewing generic lists
 
+    // Check scopes
     if (perm.scope === 'own') return Number(targetOwnerId) === Number(user.id);
-    if (perm.scope === 'team') return Number(targetOwnerId) === Number(user.id) || true; // Mock implementation for frontend check
+    if (perm.scope === 'team') return Number(targetOwnerId) === Number(user.id) || true; // In mock, we trust the backend for team filtering
 
     return false;
 };
@@ -166,38 +162,41 @@ export const hasPermission = (user: User | null, resource: string, action: strin
     return checkPermission(user, resource as PermissionResource, action as PermissionAction);
 };
 
-// IMPORTANT: This now awaits getRoles() to be sure we have the DB version
 const resolveUserPermissions = async (userRole: string, dbPermissions: any): Promise<Permission[]> => {
-    // 1. If user has specific overrides (custom permissions), use them
+    // 1. Custom Permissions on User Level
     if (dbPermissions && Array.isArray(dbPermissions) && dbPermissions.length > 0) {
         return dbPermissions;
     }
 
-    // 2. Otherwise, fetch the latest definition from DB/System for this role
-    const roles = await getRoles();
+    // 2. Fetch Latest Roles from DB
+    const roles = await getRoles(); // This triggers the PHP Auto-Fix if roles table is empty
     const roleDef = roles.find(r => r.id === userRole);
-    if (roleDef) return roleDef.permissions;
+    
+    if (roleDef && roleDef.permissions.length > 0) {
+        return roleDef.permissions;
+    }
 
-    // 3. Fallback to system default if DB fails
+    // 3. Fallback to Hardcoded Defaults (Last Resort)
     const sysRole = SYSTEM_ROLES.find(r => r.id === userRole);
-    if (sysRole) return sysRole.permissions;
-
-    return [];
+    return sysRole ? sysRole.permissions : [];
 };
 
 export const mockLogin = async (username: string, pass: string, deviceId?: string): Promise<User> => {
     const payload = { username, password: pass, deviceId: deviceId || getDeviceFingerprint() };
     const user = await apiRequest('login', 'POST', payload);
     
-    // Resolve Permissions properly (ASYNC)
-    user.permissions = await resolveUserPermissions(user.role, user.permissions);
-
-    if (user.username === 'admin') { user.role = 'admin'; user.permissions = createFullPerms('all'); }
-
     // Convert types
     user.id = Number(user.id);
     user.supervisorId = user.supervisorId ? Number(user.supervisorId) : null;
     user.isActive = user.isActive == 1 || user.isActive === true;
+
+    // Resolve Permissions (Critical Step)
+    user.permissions = await resolveUserPermissions(user.role, user.permissions);
+
+    if (user.username === 'admin' || user.id === 1) { 
+        user.role = 'admin'; 
+        user.permissions = createFullPerms('all'); 
+    }
 
     localStorage.setItem(STORAGE_KEY_USER_SESSION, JSON.stringify(user));
     return user as User;
@@ -208,7 +207,8 @@ export const getSession = (): User | null => { const data = localStorage.getItem
 
 export const refreshUserSession = async (userId: number): Promise<User | null> => {
     try {
-        const allUsers = await apiRequest('get_users', 'GET', null, undefined, true);
+        // Skip User Header to get raw data without filtering loops
+        const allUsers = await apiRequest('get_users', 'GET', null, undefined, true, true);
         const rawUser = Array.isArray(allUsers) ? allUsers.find((u: any) => Number(u.id) === userId) : null;
         if (!rawUser) return null;
 
@@ -229,32 +229,21 @@ export const refreshUserSession = async (userId: number): Promise<User | null> =
 export const getUsers = async (currentUser: User): Promise<User[]> => {
     const allUsers = await apiRequest('get_users');
     
-    // Process users in parallel to resolve their permissions
-    const usersList = await Promise.all(allUsers.map(async (u: any) => {
-        const perms = await resolveUserPermissions(u.role, u.permissions);
-        return {
-            ...u,
-            id: Number(u.id),
-            supervisorId: u.supervisorId ? Number(u.supervisorId) : null,
-            isActive: u.isActive == 1 || u.isActive === true,
-            permissions: perms
-        };
+    // We map users but DON'T resolve every single user's permissions to save bandwidth
+    // We only need the current user's full context usually.
+    // However, to show roles correctly in UI:
+    return allUsers.map((u: any) => ({
+        ...u,
+        id: Number(u.id),
+        supervisorId: u.supervisorId ? Number(u.supervisorId) : null,
+        isActive: u.isActive == 1 || u.isActive === true,
+        permissions: [] // Don't load deep perms for list view
     }));
-
-    // Filter based on currentUser scope
-    const viewPerm = currentUser.permissions.find(p => p.resource === 'users' && p.action === 'view');
-    const scope = viewPerm?.scope || 'none';
-    if (currentUser.username === 'admin' || scope === 'all') return usersList;
-    if (scope === 'team') return usersList.filter((u: User) => u.supervisorId === currentUser.id || u.id === currentUser.id);
-    return [];
 };
 
 export const saveUser = async (userToSave: User): Promise<void> => {
-    // IMPORTANT: If we want the user to inherit Role permissions dynamically, 
-    // we should NOT save a snapshot. Send empty/null permissions to DB.
-    // The backend PermissionManager will then fall back to the Roles table.
-    
-    const payload = { ...userToSave, permissions: [] }; // Send empty to force inheritance
+    // Send empty permissions to enforce inheritance from Role
+    const payload = { ...userToSave, permissions: [] }; 
     await apiRequest('save_user', 'POST', payload);
 };
 
@@ -275,7 +264,6 @@ export const applySiteSettings = (s: SiteSettings) => { document.title = s.siteN
 
 export const getODBLocationsPaginated = async (p: number, l: number, s: string = '', sig?: AbortSignal) => {
     const res = await apiRequest(`get_locations_paginated&page=${p}&limit=${l}&search=${encodeURIComponent(s)}`, 'GET', null, sig, false, true);
-    // Simple client mapping, filtering is done server-side mostly now via scopes
     const map = (d: any) => ({...d, id:Number(d.id), LATITUDE:Number(d.latitude), LONGITUDE:Number(d.longitude), ODB_ID:d.odb_id, CITYNAME:d.city_name, ownerId:d.ownerId});
     return { data: res.data.map(map), total: Number(res.total), totalPages: Number(res.totalPages) };
 };
