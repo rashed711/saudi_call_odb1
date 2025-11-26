@@ -24,6 +24,10 @@ const ODBTable: React.FC<ODBTableProps> = ({ user }) => {
   const [searchQuery, setSearchQuery] = useState('');
   const [debouncedSearch, setDebouncedSearch] = useState('');
 
+  // Debug State
+  const [showDebug, setShowDebug] = useState(false);
+  const [debugData, setDebugData] = useState<string>('');
+
   // New Modal State
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [modalMode, setModalMode] = useState<'view' | 'edit' | 'create'>('view');
@@ -45,34 +49,45 @@ const ODBTable: React.FC<ODBTableProps> = ({ user }) => {
   const fetchLocations = async (signal?: AbortSignal) => {
       setLoading(true);
       setErrorMsg(null);
+      setDebugData(''); // Reset debug data
       try {
           const result = await getODBLocationsPaginated(page, limit, debouncedSearch, signal);
           
-          // Safety check for result.data
           if (!result || !Array.isArray(result.data)) {
               setLocations([]);
               setTotalItems(0);
-              setTotalPages(0);
+              if (result && (result as any).error) {
+                  setErrorMsg((result as any).error);
+              }
               return;
           }
 
-          // Filter duplicates locally if any slip through
-          const uniqueLocations = result.data.filter((loc, index, self) => 
-             index === self.findIndex((t) => (t.ODB_ID === loc.ODB_ID))
-          );
-          setLocations(uniqueLocations);
+          setLocations(result.data);
           setTotalItems(result.total || 0);
           setTotalPages(result.totalPages || 0);
       } catch (error: any) {
-          // Ignore abort errors explicitly
-          if (error.name === 'AbortError' || error.message === 'Aborted') {
-              return;
-          }
-          console.error("Error fetching locations:", error);
-          setErrorMsg(error.message || "حدث خطأ في جلب البيانات");
+          if (error.name === 'AbortError' || error.message === 'Aborted') return;
+          console.error("Fetch Error:", error);
+          setErrorMsg(error.message || "تعذر الاتصال بقاعدة البيانات");
           setLocations([]); 
       } finally {
            if (!signal?.aborted) setLoading(false);
+      }
+  };
+
+  // Debug fetcher that bypasses JSON parsing to show raw text
+  const fetchDebugData = async () => {
+      setLoading(true);
+      try {
+          const url = `https://start.enjaz.cloud/api/api.php?action=get_locations_paginated&page=1&limit=5&search=`;
+          const response = await fetch(url);
+          const text = await response.text();
+          setDebugData(text);
+          setShowDebug(true);
+      } catch (e: any) {
+          setDebugData("Error fetching debug data: " + e.message);
+      } finally {
+          setLoading(false);
       }
   };
 
@@ -94,7 +109,6 @@ const ODBTable: React.FC<ODBTableProps> = ({ user }) => {
   // --- Modal Handlers ---
 
   const handleRowClick = (loc: ODBLocation) => {
-    // We only pass the ID and basic info. The modal will fetch the heavy image.
     setSelectedLocation(loc);
     setModalMode('view');
     setIsModalOpen(true);
@@ -217,11 +231,28 @@ const ODBTable: React.FC<ODBTableProps> = ({ user }) => {
       {errorMsg && (
         <div className="bg-red-50 text-red-600 p-4 rounded-xl border border-red-100 flex items-center gap-3 mb-4 mx-1">
             <Icons.Ban />
-            <div className="text-sm font-bold">
-                {errorMsg}
-                <div className="text-xs font-normal mt-1 opacity-75">يرجى التأكد من تشغيل السيرفر وتحديث ملف api.php بشكل صحيح.</div>
+            <div className="flex-1">
+                <div className="text-sm font-bold">{errorMsg}</div>
             </div>
+            <button onClick={() => fetchLocations()} className="bg-red-100 px-3 py-1 rounded text-xs font-bold hover:bg-red-200">
+                إعادة المحاولة
+            </button>
         </div>
+      )}
+
+      {/* Debug Area */}
+      {showDebug && (
+          <div className="fixed inset-0 z-[100] bg-black/80 flex items-center justify-center p-4">
+              <div className="bg-white w-full max-w-4xl h-[80vh] rounded-xl flex flex-col">
+                  <div className="p-4 border-b flex justify-between items-center">
+                      <h3 className="font-bold">Raw Server Response (Debug)</h3>
+                      <button onClick={() => setShowDebug(false)} className="text-red-500"><Icons.X /></button>
+                  </div>
+                  <div className="flex-1 p-4 overflow-auto">
+                      <textarea className="w-full h-full p-4 font-mono text-xs bg-gray-50 border rounded" readOnly value={debugData} />
+                  </div>
+              </div>
+          </div>
       )}
 
       {/* Bulk Action Bar */}
@@ -251,7 +282,16 @@ const ODBTable: React.FC<ODBTableProps> = ({ user }) => {
           </thead>
           <tbody>
             {loading ? ( <tr><td colSpan={3} className="text-center py-20">...</td></tr> ) : 
-             locations.length === 0 ? ( <tr><td colSpan={3} className="text-center py-20 text-gray-400">{errorMsg ? 'حدث خطأ في التحميل' : 'لا توجد نتائج'}</td></tr> ) :
+             locations.length === 0 ? ( 
+                <tr>
+                    <td colSpan={3} className="text-center py-20 text-gray-400 flex flex-col items-center gap-3">
+                        <div>{errorMsg ? 'فشل تحميل البيانات' : 'لا توجد مواقع مسجلة حالياً'}</div>
+                        <button onClick={fetchDebugData} className="text-xs bg-gray-100 hover:bg-gray-200 text-gray-600 px-3 py-1 rounded border border-gray-300">
+                            (Debug) عرض بيانات المصدر
+                        </button>
+                    </td>
+                </tr> 
+             ) :
              locations.map((loc) => (
                 <tr key={loc.id} onClick={() => handleRowClick(loc)} className={`border-b border-gray-50 cursor-pointer hover:bg-gray-50 ${selectedIds.includes(loc.id) ? 'bg-blue-50' : ''}`}>
                     <td className="py-3 px-4 text-center" onClick={(e) => e.stopPropagation()}><input type="checkbox" checked={selectedIds.includes(loc.id)} onChange={(e) => { e.stopPropagation(); handleSelectRow(loc.id); }} /></td>
@@ -270,6 +310,14 @@ const ODBTable: React.FC<ODBTableProps> = ({ user }) => {
 
       {/* Mobile App Card */}
       <div className="md:hidden space-y-3 pb-4">
+        {locations.length === 0 && !loading && (
+             <div className="text-center py-10 text-gray-400 flex flex-col items-center gap-3">
+                <span>لا توجد مواقع</span>
+                <button onClick={fetchDebugData} className="text-xs bg-white border px-3 py-1 rounded shadow-sm text-gray-500">
+                    فحص الأخطاء (Debug)
+                </button>
+             </div>
+        )}
         {locations.map((loc) => (
             <div key={loc.id} className={`bg-white rounded-2xl p-4 shadow-sm border ${selectedIds.includes(loc.id) ? 'border-primary bg-blue-50' : 'border-gray-100'}`} onClick={() => handleRowClick(loc)}>
                 <div className="flex justify-between">

@@ -47,7 +47,7 @@ async function apiRequest(action: string, method: 'GET' | 'POST' = 'GET', body: 
     
     const user = getSession();
     const headers: any = { 'Content-Type': 'application/json' };
-    // FIX: Ensure header is sent unless explicitly skipped, and handle numeric ID
+    
     if (user && user.id && !skipUserHeader) {
         headers['X-User-Id'] = user.id.toString();
     }
@@ -63,33 +63,130 @@ async function apiRequest(action: string, method: 'GET' | 'POST' = 'GET', body: 
 
     try {
         const response = await fetch(url, options);
-        const text = await response.text();
+        let text = await response.text();
+        
+        // 1. تنظيف النص من أي أحرف مخفية (BOM) أو مسافات زائدة
+        text = text.trim().replace(/^\uFEFF/, '');
+
         let data;
         try { 
-            data = JSON.parse(text); 
+            // 2. المحاولة الأولى: تحليل النص مباشرة (الحالة المثالية)
+            data = JSON.parse(text);
         } catch (e) { 
-            if (signal?.aborted) throw new Error('Aborted'); 
-            console.error("Invalid JSON response:", text);
-            return { data: [], total: 0 };
+            // 3. المحاولة الثانية: البحث عن JSON داخل النص (لتجاهل تحذيرات PHP)
+            // نبحث عن أول قوس مفتوح { أو [ وآخر قوس مغلق } أو ]
+            
+            let startObj = text.indexOf('{');
+            let startArr = text.indexOf('[');
+            
+            // تحديد نقطة البداية (أيهما يأتي أولاً، بشرط أن يكون موجوداً)
+            let startIndex = -1;
+            if (startObj !== -1 && startArr !== -1) {
+                startIndex = Math.min(startObj, startArr);
+            } else if (startObj !== -1) {
+                startIndex = startObj;
+            } else {
+                startIndex = startArr;
+            }
+
+            let endIndex = Math.max(text.lastIndexOf('}'), text.lastIndexOf(']'));
+            
+            if (startIndex !== -1 && endIndex !== -1 && endIndex > startIndex) {
+                try {
+                    const cleanJson = text.substring(startIndex, endIndex + 1);
+                    data = JSON.parse(cleanJson);
+                } catch (innerError) {
+                    console.warn("Failed to parse cleaned JSON segment:", text);
+                    throw e; // فشل التنظيف أيضاً
+                }
+            } else {
+                // console.warn("No JSON structure found in response:", text);
+                throw e; // لم يتم العثور على هيكل JSON
+            }
         }
         
-        if (!response.ok || data.error) {
+        if (!response.ok || (data && data.error)) {
+            // تجاهل الخطأ إذا كان مجرد "لا توجد نتائج"
+            if (data && data.error && (data.error.includes('لا توجد') || data.error.includes('No Data'))) {
+                return []; // Return empty array\/object instead of throwing
+            }
             throw new Error(data.error || `Error ${response.status}`);
         }
         
         return data;
     } catch (error: any) {
-        if (error.name === 'AbortError') throw error;
-        if (!silent) console.error(`API [${action}] Failed:`, error);
-        throw error;
+        if (signal?.aborted || error.name === 'AbortError') throw error;
+        
+        if (!silent) {
+            console.error(`API [${action}] Failed:`, error);
+        }
+        
+        let friendlyMsg = "فشل الاتصال بالسيرفر";
+        if (error.message.includes("JSON")) {
+            friendlyMsg = `Invalid JSON response from Server`;
+        } else if (error.message) {
+            friendlyMsg = error.message;
+        }
+        
+        throw new Error(friendlyMsg);
     }
 }
+
+// --- DATA MAPPING HELPER (ROBUST) ---
+// هذا الجزء يضمن قراءة الحقول سواء كانت بحروف كبيرة أو صغيرة أو مختلطة
+const mapDBLocation = (d: any): any => {
+    if (!d) return null;
+    
+    // Helper to find property case-insensitively
+    const getProp = (obj: any, ...keys: string[]) => {
+        for (const k of keys) {
+            if (obj[k] !== undefined) return obj[k];
+            const lowerK = k.toLowerCase();
+            const found = Object.keys(obj).find(ok => ok.toLowerCase() === lowerK);
+            if (found) return obj[found];
+        }
+        return undefined;
+    };
+
+    return {
+        ...d, 
+        // ضمان أن ID رقم صحيح
+        id: Number(getProp(d, 'id', 'ID')), 
+        
+        // قراءة الإحداثيات بأي صيغة
+        LATITUDE: Number(getProp(d, 'latitude', 'LATITUDE', 'lat') || 0), 
+        LONGITUDE: Number(getProp(d, 'longitude', 'LONGITUDE', 'lng', 'lon') || 0), 
+        
+        // قراءة النصوص
+        ODB_ID: getProp(d, 'odb_id', 'ODB_ID', 'odbId') || 'N/A', 
+        CITYNAME: getProp(d, 'city_name', 'CITYNAME', 'CityName', 'cityName') || 'غير معروف', 
+        
+        // قراءة المالك
+        ownerId: getProp(d, 'owner_id', 'ownerId', 'OwnerId'),
+        ownerName: getProp(d, 'ownerName', 'owner_name', 'OwnerName'),
+        
+        // قراءة القفل
+        isLocked: (function() {
+            const val = getProp(d, 'is_locked', 'isLocked', 'IsLocked');
+            return val === 1 || val === true || val === '1';
+        })(),
+        
+        // المسافة (اختياري)
+        distance: getProp(d, 'distance') ? Number(getProp(d, 'distance')) : undefined,
+
+        // الملاحظات والصور
+        notes: getProp(d, 'notes', 'NOTES'),
+        image: getProp(d, 'image', 'IMAGE'),
+        lastEditedBy: getProp(d, 'last_edited_by', 'lastEditedBy'),
+        lastEditedAt: getProp(d, 'last_edited_at', 'lastEditedAt')
+    };
+};
+
 
 // --- ROLE MANAGEMENT SERVICE ---
 
 export const getRoles = async (): Promise<RoleDefinition[]> => {
     try {
-        // Enable user header to check admin permissions if needed
         const dbRoles = await apiRequest('get_roles', 'GET', null, undefined, false, false);
         const roleMap = new Map<string, RoleDefinition>();
         
@@ -99,14 +196,19 @@ export const getRoles = async (): Promise<RoleDefinition[]> => {
             dbRoles.forEach((r: any) => {
                 let perms = r.permissions;
                 if (typeof perms === 'string') {
-                    try { perms = JSON.parse(perms); } catch(e) { perms = []; }
+                    try { 
+                        if (perms.startsWith('"') && perms.endsWith('"')) {
+                            perms = JSON.parse(perms);
+                        }
+                        perms = JSON.parse(perms); 
+                    } catch(e) { perms = []; }
                 }
                 if (!Array.isArray(perms)) perms = [];
 
                 roleMap.set(r.id, {
                     id: r.role_id || r.id,
                     name: r.name,
-                    isSystem: r.isSystem || r.isSystem === '1',
+                    isSystem: r.isSystem || r.isSystem === '1' || r.isSystem === 1,
                     permissions: perms
                 });
             });
@@ -143,7 +245,6 @@ export const checkPermission = (user: User | null, resource: PermissionResource,
     const perm = user.permissions.find(p => p.resource === resource && p.action === action);
     if (!perm) return false;
     
-    // Safety check for undefined scope (handles old data structure issues)
     if (!perm.scope) return false;
 
     if (perm.scope === 'none') return false;
@@ -163,21 +264,24 @@ export const hasPermission = (user: User | null, resource: string, action: strin
 };
 
 const resolveUserPermissions = async (userRole: string, dbPermissions: any): Promise<Permission[]> => {
-    // FIX: Check if permissions are valid V6 format (must have 'scope')
-    // If the DB has old permissions (actions array without scope), we must IGNORE them
-    // and fallback to the Role default.
-    const isValidV6 = dbPermissions && Array.isArray(dbPermissions) && dbPermissions.length > 0 && dbPermissions[0].scope;
-    
-    if (isValidV6) {
-        return dbPermissions;
+    let parsedPerms = dbPermissions;
+    if (typeof dbPermissions === 'string') {
+        try { parsedPerms = JSON.parse(dbPermissions); } catch { parsedPerms = []; }
     }
 
-    const roles = await getRoles();
-    const roleDef = roles.find(r => r.id === userRole);
+    const isValidV6 = parsedPerms && Array.isArray(parsedPerms) && parsedPerms.length > 0 && parsedPerms[0].scope;
     
-    if (roleDef && roleDef.permissions.length > 0) {
-        return roleDef.permissions;
+    if (isValidV6) {
+        return parsedPerms;
     }
+
+    try {
+        const roles = await getRoles();
+        const roleDef = roles.find(r => r.id === userRole);
+        if (roleDef && roleDef.permissions.length > 0) {
+            return roleDef.permissions;
+        }
+    } catch (e) { console.warn("Error resolving permissions from roles", e); }
 
     const sysRole = SYSTEM_ROLES.find(r => r.id === userRole);
     return sysRole ? sysRole.permissions : [];
@@ -191,7 +295,6 @@ export const mockLogin = async (username: string, pass: string, deviceId?: strin
     user.supervisorId = user.supervisorId ? Number(user.supervisorId) : null;
     user.isActive = user.isActive == 1 || user.isActive === true;
 
-    // Resolve permissions strictly
     user.permissions = await resolveUserPermissions(user.role, user.permissions);
 
     if (user.username === 'admin' || user.id === 1) { 
@@ -264,26 +367,13 @@ export const getSiteSettings = async () => {
 export const saveSiteSettings = async (s: SiteSettings) => { await apiRequest('save_settings', 'POST', s); applySiteSettings(s); };
 export const applySiteSettings = (s: SiteSettings) => { document.title = s.siteName; document.documentElement.style.setProperty('--color-primary', s.primaryColor); };
 
-// --- FIX: CHANGED skipUserHeader to FALSE in all below functions ---
-
 export const getODBLocationsPaginated = async (p: number, l: number, s: string = '', sig?: AbortSignal) => {
-    // ENABLE USER HEADER (false)
     const res = await apiRequest(`get_locations_paginated&page=${p}&limit=${l}&search=${encodeURIComponent(s)}`, 'GET', null, sig, false, false);
     
     const safeData = (res && Array.isArray(res.data)) ? res.data : [];
     
-    const map = (d: any) => ({
-        ...d, 
-        id: Number(d.id), 
-        LATITUDE: Number(d.latitude), 
-        LONGITUDE: Number(d.longitude), 
-        ODB_ID: d.odb_id, 
-        CITYNAME: d.city_name, 
-        ownerId: d.ownerId
-    });
-    
     return { 
-        data: safeData.map(map), 
+        data: safeData.map(mapDBLocation).filter((i: any) => i !== null),
         total: Number(res?.total || 0), 
         totalPages: Number(res?.totalPages || 0) 
     };
@@ -299,37 +389,32 @@ export const saveODBLocation = async (loc: ODBLocation) => {
 export const deleteODBLocation = async (id: number) => await apiRequest(`delete_location&id=${id}`, 'GET');
 
 export const searchODBLocation = async (q: string) => {
-    // ENABLE USER HEADER (false)
     const res = await apiRequest(`search_locations&query=${encodeURIComponent(q)}`, 'GET', null, undefined, false, false);
     if (!Array.isArray(res)) return [];
-    return res.map((d:any)=>({...d, id:Number(d.id), LATITUDE:Number(d.latitude), LONGITUDE:Number(d.longitude), ODB_ID:d.odb_id, CITYNAME:d.city_name}));
+    return res.map(mapDBLocation);
 };
 
 export const getAllLocationsForMap = async () => {
-    // ENABLE USER HEADER (false)
     const res = await apiRequest('get_all_locations', 'GET', null, undefined, false, false);
     if (!Array.isArray(res)) return [];
-    return res.map((d:any)=>({...d, id:Number(d.id), LATITUDE:Number(d.latitude), LONGITUDE:Number(d.longitude), ODB_ID:d.odb_id, CITYNAME:d.city_name}));
+    return res.map(mapDBLocation);
 };
 
 export const getLocationDetails = async (id: number) => { 
-    // ENABLE USER HEADER (false)
     const d = await apiRequest(`get_location_details&id=${id}`, 'GET', null, undefined, false, false); 
-    return {...d, id:Number(d.id), LATITUDE:Number(d.latitude), LONGITUDE:Number(d.longitude), ODB_ID:d.odb_id, CITYNAME:d.city_name}; 
+    return mapDBLocation(d);
 };
 
 export const getMyActivity = async (u: string) => {
-    // ENABLE USER HEADER (false)
     const res = await apiRequest(`get_my_activity&username=${encodeURIComponent(u)}`, 'GET', null, undefined, false, false);
     const data = Array.isArray(res) ? res : [];
-    return { data: data.map((d:any)=>({...d, id:Number(d.id), LATITUDE:Number(d.latitude), LONGITUDE:Number(d.longitude), ODB_ID:d.odb_id, CITYNAME:d.city_name})) };
+    return { data: data.map(mapDBLocation) };
 };
 
 export const getNearbyLocationsAPI = async (lat: number, lng: number, r: number, l: number) => {
-    // ENABLE USER HEADER (false)
     const res = await apiRequest(`get_nearby&lat=${lat}&lng=${lng}&radius=${r}&limit=${l}`, 'GET', null, undefined, false, false);
     if (!Array.isArray(res)) return [];
-    return res.map((d:any)=>({...d, id:Number(d.id), LATITUDE:Number(d.latitude), LONGITUDE:Number(d.longitude), ODB_ID:d.odb_id, CITYNAME:d.city_name, distance:d.distance}));
+    return res.map(mapDBLocation);
 };
 
 export const saveBulkODBLocations = async (locs: any[]) => await apiRequest('import_csv', 'POST', { locations: locs });
