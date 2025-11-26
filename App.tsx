@@ -17,6 +17,9 @@ const App: React.FC = () => {
   const [user, setUser] = useState<User | null>(null);
   const [currentView, setCurrentView] = useState<View>(View.DASHBOARD);
   const [siteName, setSiteName] = useState('ODB Manager Pro');
+  
+  // حالة نافذة تأكيد الخروج
+  const [isLogoutModalOpen, setIsLogoutModalOpen] = useState(false);
 
   // 1. Load Settings & Session on Mount
   useEffect(() => {
@@ -83,12 +86,17 @@ const App: React.FC = () => {
     }
   };
 
+  // فتح نافذة التأكيد بدلاً من رسالة المتصفح
   const handleLogout = () => {
-    if (window.confirm('هل تريد تسجيل الخروج؟')) {
-        mockLogout();
-        setUser(null);
-        setCurrentView(View.LOGIN);
-    }
+      setIsLogoutModalOpen(true);
+  };
+
+  // تنفيذ الخروج الفعلي
+  const confirmLogout = () => {
+      mockLogout();
+      setUser(null);
+      setCurrentView(View.LOGIN);
+      setIsLogoutModalOpen(false);
   };
 
   const handleLogoutForce = () => {
@@ -178,7 +186,7 @@ const App: React.FC = () => {
           <SidebarItem active={currentView === View.PROFILE} onClick={() => setCurrentView(View.PROFILE)} icon={<Icons.User />} text="حسابي" />
         </nav>
         <div className="p-4 border-t border-gray-700/50">
-          <button onClick={handleLogout} className="w-full flex items-center justify-center gap-2 text-red-400 hover:bg-red-900/20 py-2 rounded-lg">
+          <button onClick={handleLogout} className="w-full flex items-center justify-center gap-2 text-red-400 hover:bg-red-900/20 py-2 rounded-lg transition-colors">
             <Icons.LogOut /> <span>خروج</span>
           </button>
         </div>
@@ -204,7 +212,7 @@ const App: React.FC = () => {
             </div>
             <div className="flex items-center gap-3">
                  <div className="hidden md:block text-sm text-gray-600"><span className="font-bold text-gray-900">{user.name}</span> <span className="text-xs bg-gray-100 px-2 py-0.5 rounded-full border">{user.role === 'admin' ? 'مدير' : user.role === 'supervisor' ? 'مشرف' : 'مندوب'}</span></div>
-                 <button onClick={handleLogout} className="md:hidden text-gray-400"><Icons.LogOut /></button>
+                 <button onClick={handleLogout} className="md:hidden text-gray-400 hover:text-red-500"><Icons.LogOut /></button>
             </div>
         </header>
 
@@ -212,11 +220,10 @@ const App: React.FC = () => {
             {renderContent()}
         </div>
 
-        {/* Mobile Bottom Nav - Optimized Fixed Layout */}
+        {/* Mobile Bottom Nav */}
         <nav className="md:hidden fixed bottom-0 left-0 right-0 bg-white border-t border-gray-200/80 shadow-[0_-4px_20px_rgba(0,0,0,0.05)] backdrop-blur-lg z-50 pb-[env(safe-area-inset-bottom)]">
             <div className="flex justify-between items-end h-[60px] px-2 relative">
                 
-                {/* Left Side */}
                 <div className="flex-1 flex justify-around">
                      <MobileNavItem 
                         active={currentView === View.DASHBOARD} 
@@ -234,7 +241,6 @@ const App: React.FC = () => {
                     )}
                 </div>
 
-                {/* CENTER MAP BUTTON - Floating Effect */}
                 <div className="relative -top-6 px-2 z-10 shrink-0">
                      {can('map_filter', 'view') ? (
                         <div className="flex flex-col items-center">
@@ -253,7 +259,6 @@ const App: React.FC = () => {
                      )}
                 </div>
 
-                {/* Right Side */}
                 <div className="flex-1 flex justify-around">
                      {can('my_activity', 'view') && (
                         <MobileNavItem 
@@ -283,6 +288,39 @@ const App: React.FC = () => {
             </div>
         </nav>
       </main>
+
+      {/* Logout Confirmation Modal */}
+      {isLogoutModalOpen && (
+        <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/50 backdrop-blur-sm p-4 animate-in fade-in duration-200">
+            <div className="bg-white rounded-2xl shadow-2xl w-full max-w-sm p-6 transform animate-in zoom-in-95 duration-200 border border-gray-100">
+                <div className="flex flex-col items-center text-center">
+                    <div className="bg-red-50 text-red-500 p-4 rounded-full mb-4 shadow-inner">
+                        <Icons.LogOut />
+                    </div>
+                    <h3 className="text-xl font-bold text-gray-900 mb-2">تسجيل الخروج</h3>
+                    <p className="text-gray-500 text-sm mb-8 leading-relaxed">
+                        هل أنت متأكد أنك تريد تسجيل الخروج من النظام؟
+                    </p>
+                    
+                    <div className="flex gap-3 w-full">
+                        <button 
+                            onClick={() => setIsLogoutModalOpen(false)} 
+                            className="flex-1 py-3 bg-gray-100 text-gray-700 font-bold rounded-xl hover:bg-gray-200 transition-colors active:scale-95"
+                        >
+                            إلغاء
+                        </button>
+                        <button 
+                            onClick={confirmLogout} 
+                            className="flex-1 py-3 bg-red-600 text-white font-bold rounded-xl hover:bg-red-700 shadow-lg shadow-red-500/30 transition-all active:scale-95"
+                        >
+                            تأكيد الخروج
+                        </button>
+                    </div>
+                </div>
+            </div>
+        </div>
+      )}
+
     </div>
   );
 };
