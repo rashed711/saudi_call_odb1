@@ -31,7 +31,7 @@ const SYSTEM_ROLES: RoleDefinition[] = [
     ]},
     { id: 'delegate', name: 'مندوب ميداني', isSystem: true, permissions: [
             { resource: 'dashboard', action: 'view', scope: 'own' },
-            { resource: 'odb', action: 'view', scope: 'own' }, 
+            { resource: 'odb', action: 'view', scope: 'all' }, 
             { resource: 'odb', action: 'create', scope: 'own' },
             { resource: 'odb', action: 'edit', scope: 'own' }, 
             { resource: 'map_filter', action: 'view', scope: 'all' },
@@ -142,6 +142,10 @@ export const checkPermission = (user: User | null, resource: PermissionResource,
 
     const perm = user.permissions.find(p => p.resource === resource && p.action === action);
     if (!perm) return false;
+    
+    // Safety check for undefined scope (handles old data structure issues)
+    if (!perm.scope) return false;
+
     if (perm.scope === 'none') return false;
     if (perm.scope === 'all') return true;
     if (action === 'create') return true; 
@@ -159,7 +163,12 @@ export const hasPermission = (user: User | null, resource: string, action: strin
 };
 
 const resolveUserPermissions = async (userRole: string, dbPermissions: any): Promise<Permission[]> => {
-    if (dbPermissions && Array.isArray(dbPermissions) && dbPermissions.length > 0) {
+    // FIX: Check if permissions are valid V6 format (must have 'scope')
+    // If the DB has old permissions (actions array without scope), we must IGNORE them
+    // and fallback to the Role default.
+    const isValidV6 = dbPermissions && Array.isArray(dbPermissions) && dbPermissions.length > 0 && dbPermissions[0].scope;
+    
+    if (isValidV6) {
         return dbPermissions;
     }
 
@@ -182,6 +191,7 @@ export const mockLogin = async (username: string, pass: string, deviceId?: strin
     user.supervisorId = user.supervisorId ? Number(user.supervisorId) : null;
     user.isActive = user.isActive == 1 || user.isActive === true;
 
+    // Resolve permissions strictly
     user.permissions = await resolveUserPermissions(user.role, user.permissions);
 
     if (user.username === 'admin' || user.id === 1) { 
