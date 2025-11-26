@@ -42,13 +42,15 @@ const SYSTEM_ROLES: RoleDefinition[] = [
 
 // --- API HELPER ---
 async function apiRequest(action: string, method: 'GET' | 'POST' = 'GET', body: any = null, signal?: AbortSignal, silent: boolean = false, skipUserHeader: boolean = false) {
-    // Anti-cache timestamp
     const timestamp = new Date().getTime();
     const url = `${API_BASE_URL}?action=${action}&_t=${timestamp}`;
     
     const user = getSession();
     const headers: any = { 'Content-Type': 'application/json' };
-    if (user && user.id && !skipUserHeader) headers['X-User-Id'] = user.id.toString();
+    // FIX: Ensure header is sent unless explicitly skipped, and handle numeric ID
+    if (user && user.id && !skipUserHeader) {
+        headers['X-User-Id'] = user.id.toString();
+    }
 
     const options: RequestInit = { 
         method, 
@@ -68,7 +70,6 @@ async function apiRequest(action: string, method: 'GET' | 'POST' = 'GET', body: 
         } catch (e) { 
             if (signal?.aborted) throw new Error('Aborted'); 
             console.error("Invalid JSON response:", text);
-            // Fallback to empty structure to prevent crashes
             return { data: [], total: 0 };
         }
         
@@ -88,13 +89,12 @@ async function apiRequest(action: string, method: 'GET' | 'POST' = 'GET', body: 
 
 export const getRoles = async (): Promise<RoleDefinition[]> => {
     try {
-        const dbRoles = await apiRequest('get_roles', 'GET');
+        // Enable user header to check admin permissions if needed
+        const dbRoles = await apiRequest('get_roles', 'GET', null, undefined, false, false);
         const roleMap = new Map<string, RoleDefinition>();
         
-        // 1. Load System Defaults First
         SYSTEM_ROLES.forEach(r => roleMap.set(r.id, r));
         
-        // 2. Override/Add with DB Roles
         if (Array.isArray(dbRoles)) {
             dbRoles.forEach((r: any) => {
                 let perms = r.permissions;
@@ -111,7 +111,6 @@ export const getRoles = async (): Promise<RoleDefinition[]> => {
                 });
             });
         }
-        
         return Array.from(roleMap.values());
     } catch (e) {
         console.error("Failed to load roles from API, using defaults", e);
@@ -150,7 +149,7 @@ export const checkPermission = (user: User | null, resource: PermissionResource,
     if (targetOwnerId === undefined || targetOwnerId === null) return true; 
 
     if (perm.scope === 'own') return Number(targetOwnerId) === Number(user.id);
-    if (perm.scope === 'team') return true; // Trusted scope check
+    if (perm.scope === 'team') return true; 
 
     return false;
 };
@@ -255,10 +254,12 @@ export const getSiteSettings = async () => {
 export const saveSiteSettings = async (s: SiteSettings) => { await apiRequest('save_settings', 'POST', s); applySiteSettings(s); };
 export const applySiteSettings = (s: SiteSettings) => { document.title = s.siteName; document.documentElement.style.setProperty('--color-primary', s.primaryColor); };
 
+// --- FIX: CHANGED skipUserHeader to FALSE in all below functions ---
+
 export const getODBLocationsPaginated = async (p: number, l: number, s: string = '', sig?: AbortSignal) => {
-    const res = await apiRequest(`get_locations_paginated&page=${p}&limit=${l}&search=${encodeURIComponent(s)}`, 'GET', null, sig, false, true);
+    // ENABLE USER HEADER (false)
+    const res = await apiRequest(`get_locations_paginated&page=${p}&limit=${l}&search=${encodeURIComponent(s)}`, 'GET', null, sig, false, false);
     
-    // Robust check to prevent crash
     const safeData = (res && Array.isArray(res.data)) ? res.data : [];
     
     const map = (d: any) => ({
@@ -286,25 +287,39 @@ export const saveODBLocation = async (loc: ODBLocation) => {
 };
 
 export const deleteODBLocation = async (id: number) => await apiRequest(`delete_location&id=${id}`, 'GET');
+
 export const searchODBLocation = async (q: string) => {
-    const res = await apiRequest(`search_locations&query=${encodeURIComponent(q)}`, 'GET', null, undefined, false, true);
+    // ENABLE USER HEADER (false)
+    const res = await apiRequest(`search_locations&query=${encodeURIComponent(q)}`, 'GET', null, undefined, false, false);
     if (!Array.isArray(res)) return [];
     return res.map((d:any)=>({...d, id:Number(d.id), LATITUDE:Number(d.latitude), LONGITUDE:Number(d.longitude), ODB_ID:d.odb_id, CITYNAME:d.city_name}));
 };
+
 export const getAllLocationsForMap = async () => {
-    const res = await apiRequest('get_all_locations', 'GET', null, undefined, false, true);
+    // ENABLE USER HEADER (false)
+    const res = await apiRequest('get_all_locations', 'GET', null, undefined, false, false);
     if (!Array.isArray(res)) return [];
     return res.map((d:any)=>({...d, id:Number(d.id), LATITUDE:Number(d.latitude), LONGITUDE:Number(d.longitude), ODB_ID:d.odb_id, CITYNAME:d.city_name}));
 };
-export const getLocationDetails = async (id: number) => { const d = await apiRequest(`get_location_details&id=${id}`, 'GET', null, undefined, false, true); return {...d, id:Number(d.id), LATITUDE:Number(d.latitude), LONGITUDE:Number(d.longitude), ODB_ID:d.odb_id, CITYNAME:d.city_name}; };
+
+export const getLocationDetails = async (id: number) => { 
+    // ENABLE USER HEADER (false)
+    const d = await apiRequest(`get_location_details&id=${id}`, 'GET', null, undefined, false, false); 
+    return {...d, id:Number(d.id), LATITUDE:Number(d.latitude), LONGITUDE:Number(d.longitude), ODB_ID:d.odb_id, CITYNAME:d.city_name}; 
+};
+
 export const getMyActivity = async (u: string) => {
-    const res = await apiRequest(`get_my_activity&username=${encodeURIComponent(u)}`, 'GET', null, undefined, false, true);
-    const data = Array.isArray(res) ? res : []; // get_my_activity sometimes returns array directly
+    // ENABLE USER HEADER (false)
+    const res = await apiRequest(`get_my_activity&username=${encodeURIComponent(u)}`, 'GET', null, undefined, false, false);
+    const data = Array.isArray(res) ? res : [];
     return { data: data.map((d:any)=>({...d, id:Number(d.id), LATITUDE:Number(d.latitude), LONGITUDE:Number(d.longitude), ODB_ID:d.odb_id, CITYNAME:d.city_name})) };
 };
+
 export const getNearbyLocationsAPI = async (lat: number, lng: number, r: number, l: number) => {
-    const res = await apiRequest(`get_nearby&lat=${lat}&lng=${lng}&radius=${r}&limit=${l}`, 'GET', null, undefined, false, true);
+    // ENABLE USER HEADER (false)
+    const res = await apiRequest(`get_nearby&lat=${lat}&lng=${lng}&radius=${r}&limit=${l}`, 'GET', null, undefined, false, false);
     if (!Array.isArray(res)) return [];
     return res.map((d:any)=>({...d, id:Number(d.id), LATITUDE:Number(d.latitude), LONGITUDE:Number(d.longitude), ODB_ID:d.odb_id, CITYNAME:d.city_name, distance:d.distance}));
 };
+
 export const saveBulkODBLocations = async (locs: any[]) => await apiRequest('import_csv', 'POST', { locations: locs });
