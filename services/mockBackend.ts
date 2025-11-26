@@ -3,7 +3,8 @@ import { ODBLocation, User, SiteSettings, NearbyLocation, Permission, SystemLog,
 const API_BASE_URL = 'https://start.enjaz.cloud/api/api.php'; 
 const STORAGE_KEY_USER_SESSION = 'odb_user_session_v4_rbac';
 const STORAGE_KEY_DEVICE_ID = 'odb_device_id_fingerprint';
-const STORAGE_KEY_ROLES = 'odb_custom_roles_v1';
+// Changed key to v3 to reset roles to new logic
+const STORAGE_KEY_ROLES = 'odb_custom_roles_v3_force_reset';
 const STORAGE_KEY_SETTINGS = 'odb_site_settings';
 
 // --- INITIAL ROLES SETUP ---
@@ -31,19 +32,19 @@ const SYSTEM_ROLES: RoleDefinition[] = [
     },
     {
         id: 'supervisor',
-        name: 'مشرف منطقة',
+        name: 'مشرف المنطقة',
         isSystem: true,
         permissions: [
             { resource: 'dashboard', action: 'view', scope: 'own' },
-            { resource: 'odb', action: 'view', scope: 'all' }, // Can view all
+            { resource: 'odb', action: 'view', scope: 'all' }, 
             { resource: 'odb', action: 'create', scope: 'own' },
-            { resource: 'odb', action: 'edit', scope: 'team' }, // Edit Team Only
+            { resource: 'odb', action: 'edit', scope: 'team' }, 
             { resource: 'odb', action: 'delete', scope: 'none' },
-            { resource: 'users', action: 'view', scope: 'team' }, // View Team Only
+            { resource: 'users', action: 'view', scope: 'team' }, 
             { resource: 'users', action: 'create', scope: 'team' },
             { resource: 'users', action: 'edit', scope: 'team' },
-            { resource: 'map_filter', action: 'view', scope: 'all' },
-            { resource: 'search_odb', action: 'view', scope: 'all' },
+            { resource: 'map_filter', action: 'view', scope: 'all' }, 
+            { resource: 'search_odb', action: 'view', scope: 'all' }, 
             { resource: 'my_activity', action: 'view', scope: 'team' }
         ]
     },
@@ -53,40 +54,63 @@ const SYSTEM_ROLES: RoleDefinition[] = [
         isSystem: true,
         permissions: [
             { resource: 'dashboard', action: 'view', scope: 'own' },
-            { resource: 'odb', action: 'view', scope: 'all' }, // Can view all generally
+            // Table: View Own only
+            { resource: 'odb', action: 'view', scope: 'own' }, 
             { resource: 'odb', action: 'create', scope: 'own' },
-            { resource: 'odb', action: 'edit', scope: 'own' }, // Edit Own Only
+            { resource: 'odb', action: 'edit', scope: 'own' }, 
+            { resource: 'odb', action: 'delete', scope: 'none' },
+            // Map & Search: View ALL (Important for coverage check)
             { resource: 'map_filter', action: 'view', scope: 'all' },
             { resource: 'search_odb', action: 'view', scope: 'all' },
-            { resource: 'my_activity', action: 'view', scope: 'own' }
+            { resource: 'my_activity', action: 'view', scope: 'own' },
+            { resource: 'users', action: 'view', scope: 'none' }
         ]
     }
 ];
 
 // --- ROLE MANAGEMENT SERVICE ---
 export const getRoles = (): RoleDefinition[] => {
-    const stored = localStorage.getItem(STORAGE_KEY_ROLES);
-    const customRoles = stored ? JSON.parse(stored) : [];
-    return [...SYSTEM_ROLES, ...customRoles];
+    const storedString = localStorage.getItem(STORAGE_KEY_ROLES);
+    const storedRoles: RoleDefinition[] = storedString ? JSON.parse(storedString) : [];
+    
+    const storedMap = new Map(storedRoles.map(r => [r.id, r]));
+
+    const finalRoles = SYSTEM_ROLES.map(sysRole => {
+        if (storedMap.has(sysRole.id)) {
+            return { ...storedMap.get(sysRole.id)!, isSystem: true }; 
+        }
+        return sysRole;
+    });
+
+    const systemIds = new Set(SYSTEM_ROLES.map(r => r.id));
+    storedRoles.forEach(r => {
+        if (!systemIds.has(r.id)) {
+            finalRoles.push(r);
+        }
+    });
+
+    return finalRoles;
 };
 
 export const saveRole = (role: RoleDefinition) => {
-    const roles = getRoles();
-    const isSystem = SYSTEM_ROLES.some(r => r.id === role.id);
+    const storedString = localStorage.getItem(STORAGE_KEY_ROLES);
+    let storedRoles: RoleDefinition[] = storedString ? JSON.parse(storedString) : [];
     
-    if (isSystem) throw new Error("لا يمكن تعديل الأدوار الأساسية للنظام مباشرة. قم بإنشاء دور جديد.");
+    const index = storedRoles.findIndex(r => r.id === role.id);
+    
+    if (index >= 0) {
+        storedRoles[index] = role;
+    } else {
+        storedRoles.push(role);
+    }
 
-    const customRoles = roles.filter(r => !r.isSystem && r.id !== role.id);
-    customRoles.push(role);
-    localStorage.setItem(STORAGE_KEY_ROLES, JSON.stringify(customRoles));
-    
-    // Log
+    localStorage.setItem(STORAGE_KEY_ROLES, JSON.stringify(storedRoles));
     logAction(getSession()?.username || 'System', 'UPDATE', 'Roles', `Updated role: ${role.name}`);
 };
 
 export const deleteRole = (roleId: string) => {
     const isSystem = SYSTEM_ROLES.some(r => r.id === roleId);
-    if (isSystem) throw new Error("لا يمكن حذف الأدوار الأساسية للنظام.");
+    if (isSystem) throw new Error("لا يمكن حذف الأدوار الأساسية للنظام (لكن يمكنك تعديل صلاحياتها).");
     
     const stored = localStorage.getItem(STORAGE_KEY_ROLES);
     const customRoles = stored ? JSON.parse(stored) : [];
@@ -129,40 +153,49 @@ export const clearLogs = async (): Promise<void> => {
     await apiRequest('clear_logs', 'GET');
 };
 
-async function apiRequest(action: string, method: 'GET' | 'POST' = 'GET', body: any = null, signal?: AbortSignal, silent: boolean = false) {
+// UPDATED: Added skipUserHeader param. 
+// If true, we DON'T send X-User-Id, forcing backend to return GLOBAL data (which we then filter in Frontend).
+async function apiRequest(
+    action: string, 
+    method: 'GET' | 'POST' = 'GET', 
+    body: any = null, 
+    signal?: AbortSignal, 
+    silent: boolean = false,
+    skipUserHeader: boolean = false 
+) {
     const url = `${API_BASE_URL}?action=${action}`;
     const user = getSession();
     const headers: any = { 'Content-Type': 'application/json' };
-    if (user && user.id) headers['X-User-Id'] = user.id.toString();
+    
+    // Only send User ID if we are NOT skipping it (Write ops usually need it, Read ops for Maps/Search might not)
+    if (user && user.id && !skipUserHeader) {
+        headers['X-User-Id'] = user.id.toString();
+    }
 
     const options: RequestInit = { method, headers, mode: 'cors', signal };
     if (body) options.body = JSON.stringify(body);
 
     try {
         const response = await fetch(url, options);
+        if (!response.ok && response.status === 0) return null; 
+        
         const text = await response.text();
         let data;
         try { data = JSON.parse(text); } catch (e) { 
+             // Don't throw immediately on JSON parse error if it's an abort
+             if (signal?.aborted) throw new Error('Aborted');
              throw new Error('Server Error: Invalid JSON'); 
         }
         if (!response.ok || data.error) throw new Error(data.error || `Error ${response.status}`);
         return data;
     } catch (error: any) {
+        if (error.name === 'AbortError' || error.message === 'Aborted') throw error; 
         if (!silent) console.error(`API Request Failed [${action}]:`, error);
         throw error;
     }
 }
 
 // --- UTILS ---
-function calculateDistance(lat1: number, lon1: number, lat2: number, lon2: number): number {
-    const R = 6371; 
-    const dLat = (lat2 - lat1) * (Math.PI/180);
-    const dLon = (lon2 - lon1) * (Math.PI/180);
-    const a = Math.sin(dLat/2) * Math.sin(dLat/2) + Math.cos(lat1 * (Math.PI/180)) * Math.cos(lat2 * (Math.PI/180)) * Math.sin(dLon/2) * Math.sin(dLon/2); 
-    const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a)); 
-    return R * c; 
-}
-
 export const getDeviceFingerprint = (): string => {
     let deviceId = localStorage.getItem(STORAGE_KEY_DEVICE_ID);
     if (!deviceId) {
@@ -174,40 +207,44 @@ export const getDeviceFingerprint = (): string => {
 
 // --- AUTH & PERMISSION LOGIC ---
 
-// This is the Core Function for the new RBAC system
 export const checkPermission = (user: User | null, resource: PermissionResource, action: PermissionAction, targetOwnerId?: number | null): boolean => {
     if (!user) return false;
-    if (user.username === 'admin') return true; // God mode
+    if (user.username === 'admin') return true;
 
     const perm = user.permissions.find(p => p.resource === resource && p.action === action);
     if (!perm) return false;
 
-    // Evaluate Scope
     if (perm.scope === 'none') return false;
     if (perm.scope === 'all') return true;
     
+    // For 'create' action, we don't have a targetOwnerId yet, so usually allowed if scope is own/team/all
+    // Logic updated to remove redundancy: 'none' and 'all' handled above, so scope is 'own' or 'team'
+    if (action === 'create') return true;
+
     if (targetOwnerId === undefined || targetOwnerId === null) {
+        // If checking general access to a page (e.g. Can I view Map?), strict ownership doesn't apply
         return true; 
     }
 
     if (perm.scope === 'own') {
-        return targetOwnerId === user.id;
+        return Number(targetOwnerId) === Number(user.id);
     }
 
     if (perm.scope === 'team') {
-        return targetOwnerId === user.id || isSubordinate(user, targetOwnerId);
+        return Number(targetOwnerId) === Number(user.id) || isSubordinate(user, Number(targetOwnerId));
     }
 
     return false;
 };
 
-// Wrapper for permission check without target
 export const hasPermission = (user: User | null, resource: PermissionResource | string, action: PermissionAction | string): boolean => {
     return checkPermission(user, resource as PermissionResource, action as PermissionAction);
 };
 
 const isSubordinate = (supervisor: User, targetId: number): boolean => {
-    return true; // Mock implementation
+    // In a real app, you'd check the hierarchy array or DB
+    // For now, we assume if you are a supervisor, you can edit delegates
+    return true; 
 };
 
 export const mockLogin = async (username: string, pass: string, deviceId?: string): Promise<User> => {
@@ -220,16 +257,15 @@ export const mockLogin = async (username: string, pass: string, deviceId?: strin
     finalUser.supervisorId = finalUser.supervisorId ? Number(finalUser.supervisorId) : null;
     finalUser.isActive = finalUser.isActive == 1 || finalUser.isActive === true;
 
-    // Hydrate Permissions from Role Definition
+    // Load dynamic permissions
     const roleDef = getRoleById(finalUser.role);
     if (roleDef) {
         finalUser.permissions = roleDef.permissions;
     } else {
-        // Fallback to legacy default if custom role missing
+        // Fallback to delegate if role not found
         finalUser.permissions = SYSTEM_ROLES.find(r => r.id === 'delegate')?.permissions || [];
     }
 
-    // Force Admin for username 'admin'
     if (finalUser.username === 'admin') {
         finalUser.role = 'admin';
         finalUser.permissions = createFullPerms('all');
@@ -253,7 +289,9 @@ export const getSession = (): User | null => {
 
 export const refreshUserSession = async (userId: number): Promise<User | null> => {
     try {
-        const allUsers = await apiRequest('get_users'); 
+        const allUsers = await apiRequest('get_users', 'GET', null, undefined, true); 
+        if (!Array.isArray(allUsers)) return null;
+        
         const rawUser = allUsers.find((u: any) => Number(u.id) === userId);
         if (!rawUser) return null;
 
@@ -279,7 +317,7 @@ export const refreshUserSession = async (userId: number): Promise<User | null> =
     } catch (e) { return null; }
 };
 
-// --- SITE SETTINGS & MISC ---
+// --- SITE SETTINGS ---
 
 export const getSiteSettings = async (): Promise<SiteSettings> => {
     try {
@@ -316,6 +354,7 @@ export const getUsers = async (currentUser: User): Promise<User[]> => {
         deviceId: u.deviceId || null
     }));
 
+    // Logic to filter users based on currentUser scope
     const viewPerm = currentUser.permissions.find(p => p.resource === 'users' && p.action === 'view');
     const scope = viewPerm?.scope || 'none';
 
@@ -346,22 +385,28 @@ export const resetUserDevice = async (id: number): Promise<void> => {
     await apiRequest(`reset_user_device&id=${id}`, 'GET');
 };
 
+// Fixed: We request ALL data (skipUserHeader = true) then filter locally
 export const getODBLocationsPaginated = async (page: number, limit: number, search: string = '', signal?: AbortSignal): Promise<{data: ODBLocation[], total: number, totalPages: number}> => {
     const user = getSession();
     if (!user) throw new Error("Unauthorized");
 
-    const viewPerm = user.permissions.find(p => p.resource === 'odb' && p.action === 'view');
-    const scope = viewPerm?.scope || 'none';
-
     let queryParams = `get_locations_paginated&page=${page}&limit=${limit}&search=${encodeURIComponent(search)}`;
     
-    const result = await apiRequest(queryParams, 'GET', null, signal);
+    // Pass 'true' to skipUserHeader, so backend returns GLOBAL data
+    const result = await apiRequest(queryParams, 'GET', null, signal, false, true);
     
     let mappedData = result.data.map((loc: any) => mapLocation(loc));
 
+    // Client-side filtering based on RBAC Scope
+    const viewPerm = user.permissions.find(p => p.resource === 'odb' && p.action === 'view');
+    const scope = viewPerm?.scope || 'none';
+
+    // If not Admin and not All scope, we filter what we received
     if (user.username !== 'admin' && scope !== 'all') {
         if (scope === 'own') {
-            mappedData = mappedData.filter((l: ODBLocation) => l.ownerId === user.id);
+            mappedData = mappedData.filter((l: ODBLocation) => Number(l.ownerId) === Number(user.id));
+        } else if (scope === 'team') {
+            mappedData = mappedData.filter((l: ODBLocation) => Number(l.ownerId) === Number(user.id) || isSubordinate(user, Number(l.ownerId)));
         }
     }
 
@@ -374,6 +419,7 @@ export const saveODBLocation = async (location: ODBLocation): Promise<void> => {
 
     const isNew = !location.id || location.id === 0;
     
+    // Strict Edit Check
     if (!isNew && !checkPermission(user, 'odb', 'edit', location.ownerId)) {
         throw new Error("ليس لديك صلاحية لتعديل هذا الموقع (خارج النطاق المسموح)");
     }
@@ -396,28 +442,35 @@ export const deleteODBLocation = async (id: number): Promise<void> => {
     await apiRequest(`delete_location&id=${id}`, 'GET');
 };
 
+// GLOBAL Search: Skip User Header so backend searches everything
 export const searchODBLocation = async (query: string): Promise<ODBLocation[]> => {
-    const result = await apiRequest(`search_locations&query=${encodeURIComponent(query)}`);
+    const result = await apiRequest(`search_locations&query=${encodeURIComponent(query)}`, 'GET', null, undefined, false, true);
     return Array.isArray(result) ? result.map(mapLocation) : [];
 };
 
+// GLOBAL Map: Skip User Header so backend returns everything
 export const getAllLocationsForMap = async (): Promise<ODBLocation[]> => {
-    const result = await apiRequest('get_all_locations');
+    const result = await apiRequest('get_all_locations', 'GET', null, undefined, false, true);
     return Array.isArray(result) ? result.map(mapLocation) : [];
 };
 
 export const getLocationDetails = async (id: number): Promise<ODBLocation> => {
-     const result = await apiRequest(`get_location_details&id=${id}`);
+     const result = await apiRequest(`get_location_details&id=${id}`, 'GET', null, undefined, false, true);
      return mapLocation(result);
 };
 
+// My Activity: Should always filter by the requested USERNAME, not header
 export const getMyActivity = async (username: string): Promise<{data: ODBLocation[]}> => {
-    const result = await apiRequest(`get_my_activity&username=${encodeURIComponent(username)}`);
+    // We send skipUserHeader=true because we want the backend to rely on the ?username=... param
+    // strictly, and not get confused by the header.
+    const result = await apiRequest(`get_my_activity&username=${encodeURIComponent(username)}`, 'GET', null, undefined, false, true);
     return { data: Array.isArray(result) ? result.map(mapLocation) : [] };
 };
 
+// Nearby is GLOBAL
 export const getNearbyLocationsAPI = async (lat: number, lng: number, radius: number, limit: number): Promise<NearbyLocation[]> => {
-    const result = await apiRequest(`get_nearby&lat=${lat}&lng=${lng}&radius=${radius}&limit=${limit}`);
+    // Skip user header for nearby too, to see all locations
+    const result = await apiRequest(`get_nearby&lat=${lat}&lng=${lng}&radius=${radius}&limit=${limit}`, 'GET', null, undefined, false, true);
     return Array.isArray(result) ? result.map((l: any) => ({
         ...mapLocation(l),
         distance: l.distance || 0

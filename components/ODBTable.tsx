@@ -55,10 +55,12 @@ const ODBTable: React.FC<ODBTableProps> = ({ user }) => {
           setTotalItems(result.total);
           setTotalPages(result.totalPages);
       } catch (error: any) {
-          if (error.name !== 'AbortError') {
-              console.error("Error fetching locations:", error);
-              setErrorMsg(error.message);
+          // Ignore abort errors explicitly
+          if (error.name === 'AbortError' || error.message === 'Aborted') {
+              return;
           }
+          console.error("Error fetching locations:", error);
+          setErrorMsg(error.message);
       } finally {
            if (!signal?.aborted) setLoading(false);
       }

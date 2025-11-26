@@ -2,7 +2,6 @@
 import React, { useState, useEffect, useRef, useMemo } from 'react';
 import { ODBLocation, User, PermissionResource } from '../types';
 import { Icons } from './Icons';
-import { PermissionGuard } from './PermissionGuard';
 import { getLocationDetails, checkPermission } from '../services/mockBackend';
 import { CopyableText } from './CopyableText';
 
@@ -58,26 +57,29 @@ export const LocationModal: React.FC<LocationModalProps> = ({
       }
   };
 
-  // --- NEW PERMISSION LOGIC ---
-  const canEdit = useMemo(() => {
-      if (mode === 'create') return true;
-      // Use the new RBAC check function. This respects 'Scope' (Own vs Team vs All).
-      // If the location is 'Locked' by a delegate, but I am an Admin/Supervisor with 'Team/All' edit scope,
-      // this checkPermission should return true.
-      return checkPermission(user, 'odb', 'edit', formData.ownerId);
+  // --- Logic: Can User Edit? ---
+  const editStatus = useMemo(() => {
+      if (mode === 'create') return { allowed: true, reason: '' };
+      
+      // 1. Check DB Lock (القفل الإداري)
+      // إذا كان الموقع مقفلاً، فقط الأدمن أو المشرف يمكنه التعديل
+      if (formData.isLocked && user.role !== 'admin' && user.role !== 'supervisor') {
+          return { allowed: false, reason: 'مقفل إدارياً' };
+      }
+
+      // 2. Check RBAC Permissions (صلاحيات الدور)
+      const hasPerm = checkPermission(user, 'odb', 'edit', formData.ownerId);
+      if (!hasPerm) {
+          return { allowed: false, reason: 'للمالك فقط' }; // أو خارج الصلاحية
+      }
+
+      return { allowed: true, reason: '' };
   }, [formData, user, mode]);
 
   const canToggleLock = useMemo(() => {
-     // Only those with 'all' or 'team' edit scope can likely toggle locks, or specifically admins
-     // For simplicity:
+     // فقط المدير والمشرف يمكنهم تغيير حالة القفل
      return user.role === 'admin' || user.role === 'supervisor'; 
   }, [user]);
-
-  const getPermissionResource = (): PermissionResource => {
-      // Mapping context to resource (simplified for now to 'odb' mostly as it's the core data)
-      if (context === 'my_activity') return 'my_activity'; 
-      return 'odb';
-  };
 
   if (!isOpen) return null;
 
@@ -140,7 +142,7 @@ export const LocationModal: React.FC<LocationModalProps> = ({
   // --- RENDER VIEW MODE ---
   const renderViewMode = () => (
     <div className="flex flex-col h-full bg-white md:rounded-2xl overflow-hidden">
-        {/* Same Header/Image Logic as before ... */}
+        {/* Header Image Section */}
         <div className="relative h-48 md:h-56 bg-gray-100 shrink-0 group cursor-pointer border-b border-gray-200" onClick={() => !isLoadingDetails && formData.image && setIsZoomed(true)}>
             {isLoadingDetails ? (
                 <div className="w-full h-full flex flex-col items-center justify-center bg-gray-100 animate-pulse">
@@ -223,14 +225,15 @@ export const LocationModal: React.FC<LocationModalProps> = ({
                 </button>
             )}
 
-            {/* EDITED: Now using the robust canEdit check */}
-            {canEdit ? (
+            {editStatus.allowed ? (
                 <button onClick={onEdit} className="flex-1 bg-primary text-white py-3 rounded-xl font-bold flex items-center justify-center gap-2 shadow-lg shadow-blue-600/20 active:scale-95 transition-transform">
                     <Icons.Edit /> <span className="hidden md:inline">تعديل</span>
                 </button>
             ) : (
-                <div className="flex-1 bg-gray-200 text-gray-400 py-3 rounded-xl font-bold flex items-center justify-center gap-2 cursor-not-allowed">
-                    <Icons.Lock /> <span className="hidden md:inline">مقفل</span>
+                <div className="flex-1 bg-gray-200 text-gray-500 py-3 rounded-xl font-bold flex items-center justify-center gap-2 cursor-not-allowed opacity-80" title={editStatus.reason}>
+                    <Icons.Lock /> 
+                    <span className="hidden md:inline">مقفل ({editStatus.reason})</span>
+                    <span className="md:hidden text-xs">{editStatus.reason}</span>
                 </div>
             )}
         </div>
@@ -238,7 +241,20 @@ export const LocationModal: React.FC<LocationModalProps> = ({
   );
 
   const renderEditMode = () => {
+    // If not creating, ensure user can edit
+    if (mode === 'edit' && !editStatus.allowed) {
+        return (
+            <div className="flex flex-col h-full items-center justify-center text-center p-6 bg-white rounded-2xl">
+                <Icons.Ban />
+                <h3 className="mt-2 font-bold text-red-600">عفواً، لا يمكنك تعديل هذا الموقع</h3>
+                <p className="text-sm text-gray-500 mt-1">السبب: {editStatus.reason}</p>
+                <button onClick={onClose} className="mt-4 bg-gray-100 px-4 py-2 rounded-lg font-bold">إغلاق</button>
+            </div>
+        );
+    }
+
     const isCoreLocked = mode === 'edit' && context !== 'default';
+    
     return (
     <div className="flex flex-col h-full bg-white md:rounded-2xl overflow-hidden">
         <div className="p-4 border-b border-gray-100 flex justify-between items-center bg-gray-50">
@@ -250,11 +266,12 @@ export const LocationModal: React.FC<LocationModalProps> = ({
         </div>
 
         <form id="locationForm" onSubmit={handleSaveInternal} className="flex-1 overflow-y-auto p-5 space-y-5">
+            {/* Lock Toggle: Only visible to Admins/Supervisors */}
             {canToggleLock && mode === 'edit' && (
                 <div className="bg-purple-50 border border-purple-100 p-4 rounded-xl flex items-center justify-between">
                     <div>
                         <span className="block text-xs font-bold text-purple-800">حالة القفل (Lock)</span>
-                        <span className="text-[10px] text-purple-600">منع المندوب من التعديل</span>
+                        <span className="text-[10px] text-purple-600">عند التفعيل، لن يتمكن المندوب من التعديل</span>
                     </div>
                     <label className="relative inline-flex items-center cursor-pointer">
                         <input type="checkbox" checked={formData.isLocked || false} onChange={(e) => setFormData({...formData, isLocked: e.target.checked})} className="sr-only peer" />

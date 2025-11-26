@@ -228,6 +228,7 @@ const UserManagement: React.FC = () => {
                                     <td className="px-6 py-4 text-center flex justify-center gap-2">
                                         <button onClick={() => handleEditRole(r)} className="text-blue-600 hover:bg-blue-50 p-2 rounded"><Icons.Edit /></button>
                                         {!r.isSystem && <button onClick={() => handleDeleteRole(r.id)} className="text-red-600 hover:bg-red-50 p-2 rounded"><Icons.Trash /></button>}
+                                        {r.isSystem && <button disabled className="text-gray-300 p-2 cursor-not-allowed" title="لا يمكن حذف دور أساسي"><Icons.Trash /></button>}
                                     </td>
                                 </tr>
                             ))}
@@ -278,7 +279,7 @@ const UserManagement: React.FC = () => {
                 <div className="bg-white rounded-2xl w-full max-w-5xl h-[90vh] flex flex-col shadow-2xl animate-in zoom-in-95">
                     <div className="p-4 border-b flex justify-between items-center bg-gray-50 rounded-t-2xl">
                         <h3 className="font-bold text-lg">
-                            {editingRole.isSystem ? `عرض صلاحيات: ${editingRole.name}` : `تخصيص الدور: ${editingRole.name || 'جديد'}`}
+                            {editingRole.isSystem ? `تعديل دور النظام: ${editingRole.name}` : `تخصيص الدور: ${editingRole.name || 'جديد'}`}
                         </h3>
                         <button onClick={() => setRoleModalOpen(false)}><Icons.X /></button>
                     </div>
@@ -287,16 +288,20 @@ const UserManagement: React.FC = () => {
                         <label className="text-xs font-bold text-gray-500 block mb-1">اسم الدور</label>
                         <input 
                             type="text" 
-                            disabled={editingRole.isSystem} 
                             value={editingRole.name} 
                             onChange={e => setEditingRole({...editingRole, name: e.target.value})}
-                            className="w-full md:w-1/3 p-2 border rounded-lg disabled:bg-gray-100"
+                            className="w-full md:w-1/3 p-2 border rounded-lg focus:ring-2 focus:ring-purple-500"
                             placeholder="مثال: مراجع مالي"
                         />
                     </div>
 
                     <div className="flex-1 overflow-auto p-4 bg-gray-50">
-                        {editingRole.isSystem && <div className="mb-4 bg-yellow-50 p-3 rounded text-sm text-yellow-800 border border-yellow-200">هذا دور نظام أساسي، لا يمكنك تعديل صلاحياته الأساسية ولكن يمكنك استخدامه كقالب لإنشاء دور جديد.</div>}
+                        {editingRole.isSystem && (
+                            <div className="mb-4 bg-orange-50 p-3 rounded text-sm text-orange-800 border border-orange-200 flex items-center gap-2">
+                                <Icons.Shield />
+                                <span>تنبيه: أنت تقوم بتعديل دور أساسي في النظام. التعديلات ستطبق فوراً على جميع المستخدمين المرتبطين بهذا الدور.</span>
+                            </div>
+                        )}
                         
                         <div className="bg-white rounded-xl shadow-sm border border-gray-200 overflow-hidden">
                             <table className="w-full text-center border-collapse">
@@ -318,7 +323,6 @@ const UserManagement: React.FC = () => {
                                                 return (
                                                     <td key={act.id} className="p-2 border-l last:border-l-0">
                                                         <select 
-                                                            disabled={editingRole.isSystem}
                                                             value={currentScope}
                                                             onChange={(e) => updateRolePerm(res.id, act.id, e.target.value as PermissionScope)}
                                                             className={`w-full p-1.5 rounded text-xs font-bold border-2 cursor-pointer outline-none transition-colors ${
@@ -342,11 +346,9 @@ const UserManagement: React.FC = () => {
 
                     <div className="p-4 border-t bg-white rounded-b-2xl flex justify-end gap-3">
                          <button onClick={() => setRoleModalOpen(false)} className="px-6 py-2 rounded-xl font-bold text-gray-600 hover:bg-gray-100">إغلاق</button>
-                         {!editingRole.isSystem && (
-                             <button onClick={handleSaveRole} className="px-6 py-2 rounded-xl font-bold bg-purple-600 text-white hover:bg-purple-700 shadow-lg shadow-purple-500/20">
-                                 حفظ الصلاحيات
-                             </button>
-                         )}
+                         <button onClick={handleSaveRole} className="px-6 py-2 rounded-xl font-bold bg-purple-600 text-white hover:bg-purple-700 shadow-lg shadow-purple-500/20">
+                             حفظ التغييرات
+                         </button>
                     </div>
                 </div>
             </div>

@@ -31,9 +31,15 @@ const SearchODB: React.FC<Props> = ({ user }) => {
         
         try {
             const data = await searchODBLocation(query);
-            setResults(data);
+            // Ensure data is array before setting
+            if (Array.isArray(data)) {
+                setResults(data);
+            } else {
+                setResults([]);
+            }
         } catch (error) {
             console.error(error);
+            alert("حدث خطأ أثناء الاتصال بقاعدة البيانات. تأكد من أن السيرفر يعمل.");
         } finally {
             setLoading(false);
         }
@@ -64,7 +70,7 @@ const SearchODB: React.FC<Props> = ({ user }) => {
                     </div>
                     <div className="hidden md:block">
                         <h2 className="text-xl font-bold text-gray-800">استعلام عن ODB</h2>
-                        <p className="text-sm text-gray-500 mt-1">ابحث عن أي موقع باستخدام كود ODB</p>
+                        <p className="text-sm text-gray-500 mt-1">ابحث عن أي موقع باستخدام كود ODB (يظهر لك جميع النتائج المتاحة)</p>
                     </div>
 
                     <form onSubmit={handleSearch} className="w-full relative flex items-center shadow-sm border border-gray-200 rounded-xl overflow-hidden group focus-within:ring-2 focus-within:ring-primary/20 transition-all bg-gray-50">
@@ -99,7 +105,7 @@ const SearchODB: React.FC<Props> = ({ user }) => {
                             <>
                                 <div className="flex justify-between items-center px-1">
                                     <h3 className="font-bold text-gray-700 text-sm">نتائج البحث ({results.length})</h3>
-                                    <span className="text-[10px] bg-gray-200 text-gray-600 px-2 py-0.5 rounded-full">بحث مطابق</span>
+                                    <span className="text-[10px] bg-gray-200 text-gray-600 px-2 py-0.5 rounded-full">بحث عام</span>
                                 </div>
                                 <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
                                     {results.map(loc => (
@@ -138,7 +144,7 @@ const SearchODB: React.FC<Props> = ({ user }) => {
                             <div className="flex flex-col items-center justify-center py-20 text-gray-400 bg-white rounded-xl border border-gray-100 border-dashed mx-4">
                                 <Icons.Ban />
                                 <span className="mt-2 text-sm font-bold">لا توجد نتائج مطابقة لـ "{query}"</span>
-                                <span className="text-xs mt-1">تأكد من كتابة الكود أو الاسم بشكل صحيح</span>
+                                <span className="text-xs mt-1">إذا كنت متأكداً من وجود الموقع، يرجى مراجعة إعدادات الباك اند (api.php) للتأكد من عدم فلترة النتائج.</span>
                             </div>
                         )}
                     </div>
