@@ -1,43 +1,106 @@
-
-import { ODBLocation, User, SiteSettings, NearbyLocation, Permission, SystemLog } from '../types';
+import { ODBLocation, User, SiteSettings, NearbyLocation, Permission, SystemLog, RoleDefinition, PermissionResource, PermissionAction, PermissionScope } from '../types';
 
 const API_BASE_URL = 'https://start.enjaz.cloud/api/api.php'; 
-const STORAGE_KEY_USER_SESSION = 'odb_user_session_v3_perm';
+const STORAGE_KEY_USER_SESSION = 'odb_user_session_v4_rbac';
 const STORAGE_KEY_DEVICE_ID = 'odb_device_id_fingerprint';
+const STORAGE_KEY_ROLES = 'odb_custom_roles_v1';
+const STORAGE_KEY_SETTINGS = 'odb_site_settings';
 
-// --- DEFAULT PERMISSIONS TEMPLATES ---
-const ADMIN_PERMISSIONS: Permission[] = [
-    { resource: 'dashboard', actions: ['view'] },
-    { resource: 'odb', actions: ['view', 'create', 'edit', 'delete', 'export'] },
-    { resource: 'nearby', actions: ['view', 'create', 'edit'] },
-    { resource: 'users', actions: ['view', 'create', 'edit', 'delete'] },
-    { resource: 'settings', actions: ['view', 'edit'] },
-    { resource: 'my_activity', actions: ['view'] },
-    { resource: 'map_filter', actions: ['view', 'create', 'edit', 'delete', 'export'] }, 
-    { resource: 'search_odb', actions: ['view', 'edit'] },
-    { resource: 'system_logs', actions: ['view', 'delete', 'export'] }
+// --- INITIAL ROLES SETUP ---
+const ALL_RESOURCES: PermissionResource[] = ['dashboard', 'odb', 'nearby', 'users', 'settings', 'my_activity', 'map_filter', 'search_odb', 'system_logs', 'roles'];
+const ACTIONS: PermissionAction[] = ['view', 'create', 'edit', 'delete', 'export'];
+
+// Helper to generate full permissions
+const createFullPerms = (scope: PermissionScope = 'all'): Permission[] => {
+    let perms: Permission[] = [];
+    ALL_RESOURCES.forEach(res => {
+        ACTIONS.forEach(act => {
+            perms.push({ resource: res, action: act, scope: scope });
+        });
+    });
+    return perms;
+};
+
+// Initial System Roles
+const SYSTEM_ROLES: RoleDefinition[] = [
+    {
+        id: 'admin',
+        name: 'مدير النظام (Super Admin)',
+        isSystem: true,
+        permissions: createFullPerms('all')
+    },
+    {
+        id: 'supervisor',
+        name: 'مشرف منطقة',
+        isSystem: true,
+        permissions: [
+            { resource: 'dashboard', action: 'view', scope: 'own' },
+            { resource: 'odb', action: 'view', scope: 'all' }, // Can view all
+            { resource: 'odb', action: 'create', scope: 'own' },
+            { resource: 'odb', action: 'edit', scope: 'team' }, // Edit Team Only
+            { resource: 'odb', action: 'delete', scope: 'none' },
+            { resource: 'users', action: 'view', scope: 'team' }, // View Team Only
+            { resource: 'users', action: 'create', scope: 'team' },
+            { resource: 'users', action: 'edit', scope: 'team' },
+            { resource: 'map_filter', action: 'view', scope: 'all' },
+            { resource: 'search_odb', action: 'view', scope: 'all' },
+            { resource: 'my_activity', action: 'view', scope: 'team' }
+        ]
+    },
+    {
+        id: 'delegate',
+        name: 'مندوب ميداني',
+        isSystem: true,
+        permissions: [
+            { resource: 'dashboard', action: 'view', scope: 'own' },
+            { resource: 'odb', action: 'view', scope: 'all' }, // Can view all generally
+            { resource: 'odb', action: 'create', scope: 'own' },
+            { resource: 'odb', action: 'edit', scope: 'own' }, // Edit Own Only
+            { resource: 'map_filter', action: 'view', scope: 'all' },
+            { resource: 'search_odb', action: 'view', scope: 'all' },
+            { resource: 'my_activity', action: 'view', scope: 'own' }
+        ]
+    }
 ];
 
-const SUPERVISOR_PERMISSIONS: Permission[] = [
-    { resource: 'dashboard', actions: ['view'] },
-    { resource: 'odb', actions: ['view', 'create', 'edit'] }, 
-    { resource: 'nearby', actions: ['view'] },
-    { resource: 'users', actions: ['view', 'create', 'edit'] }, 
-    { resource: 'my_activity', actions: ['view'] },
-    { resource: 'map_filter', actions: ['view'] },
-    { resource: 'search_odb', actions: ['view'] },
-    { resource: 'system_logs', actions: [] }
-];
+// --- ROLE MANAGEMENT SERVICE ---
+export const getRoles = (): RoleDefinition[] => {
+    const stored = localStorage.getItem(STORAGE_KEY_ROLES);
+    const customRoles = stored ? JSON.parse(stored) : [];
+    return [...SYSTEM_ROLES, ...customRoles];
+};
 
-const DELEGATE_PERMISSIONS: Permission[] = [
-    { resource: 'dashboard', actions: ['view'] },
-    { resource: 'odb', actions: ['view'] }, 
-    { resource: 'nearby', actions: ['view'] },
-    { resource: 'my_activity', actions: ['view', 'edit'] }, 
-    { resource: 'map_filter', actions: ['view'] },
-    { resource: 'search_odb', actions: ['view'] },
-    { resource: 'system_logs', actions: [] }
-];
+export const saveRole = (role: RoleDefinition) => {
+    const roles = getRoles();
+    const isSystem = SYSTEM_ROLES.some(r => r.id === role.id);
+    
+    if (isSystem) throw new Error("لا يمكن تعديل الأدوار الأساسية للنظام مباشرة. قم بإنشاء دور جديد.");
+
+    const customRoles = roles.filter(r => !r.isSystem && r.id !== role.id);
+    customRoles.push(role);
+    localStorage.setItem(STORAGE_KEY_ROLES, JSON.stringify(customRoles));
+    
+    // Log
+    logAction(getSession()?.username || 'System', 'UPDATE', 'Roles', `Updated role: ${role.name}`);
+};
+
+export const deleteRole = (roleId: string) => {
+    const isSystem = SYSTEM_ROLES.some(r => r.id === roleId);
+    if (isSystem) throw new Error("لا يمكن حذف الأدوار الأساسية للنظام.");
+    
+    const stored = localStorage.getItem(STORAGE_KEY_ROLES);
+    const customRoles = stored ? JSON.parse(stored) : [];
+    const newRoles = customRoles.filter((r: RoleDefinition) => r.id !== roleId);
+    localStorage.setItem(STORAGE_KEY_ROLES, JSON.stringify(newRoles));
+    
+    logAction(getSession()?.username || 'System', 'DELETE', 'Roles', `Deleted role ID: ${roleId}`);
+};
+
+export const getRoleById = (id: string): RoleDefinition | undefined => {
+    return getRoles().find(r => r.id === id);
+};
+
+// --- API & DATA ---
 
 const DEFAULT_SETTINGS: SiteSettings = {
     siteName: 'ODB Manager Pro',
@@ -48,87 +111,43 @@ const DEFAULT_SETTINGS: SiteSettings = {
     maxResults: 20 
 };
 
-// --- SYSTEM LOGGING (CONNECTED TO API) ---
 export const getLogs = async (): Promise<SystemLog[]> => {
     try {
         const result = await apiRequest('get_logs', 'GET', null, undefined, true);
         return Array.isArray(result) ? result : [];
     } catch (e) {
-        console.error("Failed to fetch logs:", e);
         return [];
     }
 };
 
 export const logAction = (username: string, action: SystemLog['action'], resource: string, details: string) => {
-     const payload = {
-        username: username || 'Unknown',
-        action,
-        resource,
-        details
-    };
-    // Send to server without blocking UI (Fire and Forget)
-    apiRequest('log_action', 'POST', payload, undefined, true).catch(e => {
-        console.error("System Log Failed", e);
-    });
+     const payload = { username: username || 'Unknown', action, resource, details };
+    apiRequest('log_action', 'POST', payload, undefined, true).catch(e => {});
 };
 
-export const clearLogs = async (olderThanDays?: number): Promise<void> => {
+export const clearLogs = async (): Promise<void> => {
     await apiRequest('clear_logs', 'GET');
-    const user = getSession();
-    if(user) {
-        logAction(user.username, 'DELETE', 'System', 'Cleared all system logs');
-    }
 };
 
-// --- HELPER ---
 async function apiRequest(action: string, method: 'GET' | 'POST' = 'GET', body: any = null, signal?: AbortSignal, silent: boolean = false) {
     const url = `${API_BASE_URL}?action=${action}`;
-    
-    // Get Current User ID for Security Context
     const user = getSession();
     const headers: any = { 'Content-Type': 'application/json' };
-    if (user && user.id) {
-        headers['X-User-Id'] = user.id.toString();
-    }
+    if (user && user.id) headers['X-User-Id'] = user.id.toString();
 
-    const options: RequestInit = {
-        method,
-        headers: headers,
-        mode: 'cors',
-        signal
-    };
+    const options: RequestInit = { method, headers, mode: 'cors', signal };
     if (body) options.body = JSON.stringify(body);
 
     try {
         const response = await fetch(url, options);
         const text = await response.text();
-        
         let data;
-        try { 
-            data = JSON.parse(text); 
-        } catch (e) { 
-            if (response.ok) {
-                 if (text.includes("Fatal error") || text.includes("Parse error")) {
-                    throw new Error("خطأ برمجي في السيرفر (PHP Error).");
-                 }
-                 throw new Error('الخادم أرسل استجابة غير صحيحة (Invalid JSON)'); 
-            }
+        try { data = JSON.parse(text); } catch (e) { 
+             throw new Error('Server Error: Invalid JSON'); 
         }
-
-        if (!response.ok) {
-            if (data && data.error) throw new Error(data.error);
-            const cleanText = text ? text.replace(/<[^>]+>/g, '').trim().substring(0, 150) : response.statusText;
-            throw new Error(`Server Error (${response.status}): ${cleanText}`);
-        }
-
-        if (data.error) throw new Error(data.error);
+        if (!response.ok || data.error) throw new Error(data.error || `Error ${response.status}`);
         return data;
-
     } catch (error: any) {
-        if (error.name === 'AbortError') throw error;
-        if (error.message === 'Failed to fetch') {
-             throw new Error("فشل الاتصال بالسيرفر. تأكد من تشغيل ملف api.php وإعدادات CORS.");
-        }
         if (!silent) console.error(`API Request Failed [${action}]:`, error);
         throw error;
     }
@@ -137,107 +156,94 @@ async function apiRequest(action: string, method: 'GET' | 'POST' = 'GET', body: 
 // --- UTILS ---
 function calculateDistance(lat1: number, lon1: number, lat2: number, lon2: number): number {
     const R = 6371; 
-    const dLat = deg2rad(lat2 - lat1);
-    const dLon = deg2rad(lon2 - lon1);
-    const a = 
-        Math.sin(dLat/2) * Math.sin(dLat/2) +
-        Math.cos(deg2rad(lat1)) * Math.cos(deg2rad(lat2)) * 
-        Math.sin(dLon/2) * Math.sin(dLon/2); 
+    const dLat = (lat2 - lat1) * (Math.PI/180);
+    const dLon = (lon2 - lon1) * (Math.PI/180);
+    const a = Math.sin(dLat/2) * Math.sin(dLat/2) + Math.cos(lat1 * (Math.PI/180)) * Math.cos(lat2 * (Math.PI/180)) * Math.sin(dLon/2) * Math.sin(dLon/2); 
     const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a)); 
-    const d = R * c; 
-    return d;
+    return R * c; 
 }
 
-function deg2rad(deg: number): number {
-    return deg * (Math.PI/180);
-}
-
-// --- DEVICE FINGERPRINT UTILS ---
 export const getDeviceFingerprint = (): string => {
     let deviceId = localStorage.getItem(STORAGE_KEY_DEVICE_ID);
     if (!deviceId) {
-        deviceId = 'dev_' + Math.random().toString(36).substring(2, 15) + Math.random().toString(36).substring(2, 15);
+        deviceId = 'dev_' + Math.random().toString(36).substring(2, 15);
         localStorage.setItem(STORAGE_KEY_DEVICE_ID, deviceId);
     }
     return deviceId;
 };
 
-// --- AUTH & PERMISSIONS ---
+// --- AUTH & PERMISSION LOGIC ---
+
+// This is the Core Function for the new RBAC system
+export const checkPermission = (user: User | null, resource: PermissionResource, action: PermissionAction, targetOwnerId?: number | null): boolean => {
+    if (!user) return false;
+    if (user.username === 'admin') return true; // God mode
+
+    const perm = user.permissions.find(p => p.resource === resource && p.action === action);
+    if (!perm) return false;
+
+    // Evaluate Scope
+    if (perm.scope === 'none') return false;
+    if (perm.scope === 'all') return true;
+    
+    if (targetOwnerId === undefined || targetOwnerId === null) {
+        return true; 
+    }
+
+    if (perm.scope === 'own') {
+        return targetOwnerId === user.id;
+    }
+
+    if (perm.scope === 'team') {
+        return targetOwnerId === user.id || isSubordinate(user, targetOwnerId);
+    }
+
+    return false;
+};
+
+// Wrapper for permission check without target
+export const hasPermission = (user: User | null, resource: PermissionResource | string, action: PermissionAction | string): boolean => {
+    return checkPermission(user, resource as PermissionResource, action as PermissionAction);
+};
+
+const isSubordinate = (supervisor: User, targetId: number): boolean => {
+    return true; // Mock implementation
+};
+
 export const mockLogin = async (username: string, pass: string, deviceId?: string): Promise<User> => {
     const finalDeviceId = deviceId || getDeviceFingerprint();
-    
     const payload = { username, password: pass, deviceId: finalDeviceId };
     
-    try {
-        const user = await apiRequest('login', 'POST', payload);
-        
-        let finalUser = { ...user };
-        if (typeof finalUser.permissions === 'string') {
-            try { finalUser.permissions = JSON.parse(finalUser.permissions); } catch(e) { finalUser.permissions = null; }
-        }
+    const user = await apiRequest('login', 'POST', payload);
+    let finalUser = { ...user };
+    finalUser.id = Number(finalUser.id);
+    finalUser.supervisorId = finalUser.supervisorId ? Number(finalUser.supervisorId) : null;
+    finalUser.isActive = finalUser.isActive == 1 || finalUser.isActive === true;
 
-        // Apply defaults ONLY if permissions are missing.
-        if (!finalUser.permissions || !Array.isArray(finalUser.permissions)) {
-            if (finalUser.role === 'admin') finalUser.permissions = ADMIN_PERMISSIONS;
-            else if (finalUser.role === 'supervisor') finalUser.permissions = SUPERVISOR_PERMISSIONS;
-            else finalUser.permissions = DELEGATE_PERMISSIONS;
-        }
-        
-        // Ensure Super Admin has all permissions visually in state (though logic overrides)
-        if (finalUser.username === 'admin') {
-            finalUser.permissions = ADMIN_PERMISSIONS;
-            finalUser.role = 'admin';
-        }
-        
-        finalUser.id = Number(finalUser.id);
-        finalUser.supervisorId = finalUser.supervisorId ? Number(finalUser.supervisorId) : null;
-
-        if (finalUser.deviceId) {
-            if (finalUser.deviceId !== finalDeviceId) {
-                logAction(username, 'SECURITY', 'Auth', `Failed login attempt from unregistered device: ${finalDeviceId}`);
-                throw new Error("هذا الحساب مرتبط بجهاز آخر. لا يمكنك تسجيل الدخول من هذا الجهاز. يرجى التواصل مع المدير.");
-            }
-        } else {
-            try {
-                await bindUserDevice(finalUser.id, finalDeviceId);
-                finalUser.deviceId = finalDeviceId;
-                logAction(username, 'SECURITY', 'Device', 'First time device binding successful');
-            } catch (e) {
-                console.error("Failed to bind device", e);
-            }
-        }
-
-        localStorage.setItem(STORAGE_KEY_USER_SESSION, JSON.stringify(finalUser));
-        
-        // Log Success
-        logAction(username, 'LOGIN', 'System', 'User logged in successfully');
-        
-        return finalUser as User;
-    } catch (e: any) {
-        // Log Failure if not a device error (to avoid spamming from valid users on wrong devices)
-        if (!e.message.includes('مرتبط بجهاز')) {
-            logAction(username, 'ERROR', 'Auth', `Login failed: ${e.message}`);
-        }
-        throw e;
+    // Hydrate Permissions from Role Definition
+    const roleDef = getRoleById(finalUser.role);
+    if (roleDef) {
+        finalUser.permissions = roleDef.permissions;
+    } else {
+        // Fallback to legacy default if custom role missing
+        finalUser.permissions = SYSTEM_ROLES.find(r => r.id === 'delegate')?.permissions || [];
     }
-};
 
-export const bindUserDevice = async (userId: number, deviceId: string): Promise<void> => {
-    await apiRequest(`bind_device&id=${userId}&deviceId=${deviceId}`, 'GET', null, undefined, true);
-};
+    // Force Admin for username 'admin'
+    if (finalUser.username === 'admin') {
+        finalUser.role = 'admin';
+        finalUser.permissions = createFullPerms('all');
+    }
 
-export const resetUserDevice = async (id: number): Promise<void> => {
-    await apiRequest(`reset_user_device&id=${id}`, 'GET');
-    const currentUser = getSession();
-    logAction(currentUser?.username || 'System', 'SECURITY', 'User', `Reset device binding for User ID: ${id}`);
+    localStorage.setItem(STORAGE_KEY_USER_SESSION, JSON.stringify(finalUser));
+    logAction(username, 'LOGIN', 'System', 'User logged in');
+    return finalUser as User;
 };
 
 export const mockLogout = () => {
-  const user = getSession();
-  if (user) {
-      logAction(user.username, 'LOGOUT', 'System', 'User logged out');
-  }
-  localStorage.removeItem(STORAGE_KEY_USER_SESSION);
+    const user = getSession();
+    if(user) logAction(user.username, 'LOGOUT', 'System', 'User logged out');
+    localStorage.removeItem(STORAGE_KEY_USER_SESSION);
 };
 
 export const getSession = (): User | null => {
@@ -247,22 +253,12 @@ export const getSession = (): User | null => {
 
 export const refreshUserSession = async (userId: number): Promise<User | null> => {
     try {
-        const allUsers = await apiRequest('get_users', 'GET', null, undefined, true); 
+        const allUsers = await apiRequest('get_users'); 
         const rawUser = allUsers.find((u: any) => Number(u.id) === userId);
-        
         if (!rawUser) return null;
 
-        let permissions = rawUser.permissions;
-        if (typeof permissions === 'string') {
-            try { permissions = JSON.parse(permissions); } catch(e) { permissions = null; }
-        }
-
-        if (!permissions || !Array.isArray(permissions)) {
-             if (rawUser.role === 'admin') permissions = ADMIN_PERMISSIONS;
-             else if (rawUser.role === 'supervisor') permissions = SUPERVISOR_PERMISSIONS;
-             else permissions = DELEGATE_PERMISSIONS;
-        }
-
+        const roleDef = getRoleById(rawUser.role) || SYSTEM_ROLES.find(r => r.id === 'delegate')!;
+        
         const freshUser: User = {
             id: Number(rawUser.id),
             username: rawUser.username,
@@ -271,306 +267,176 @@ export const refreshUserSession = async (userId: number): Promise<User | null> =
             role: rawUser.role,
             supervisorId: rawUser.supervisorId ? Number(rawUser.supervisorId) : null,
             isActive: rawUser.isActive == 1 || rawUser.isActive === true,
-            permissions: permissions,
+            permissions: roleDef.permissions,
             deviceId: rawUser.deviceId || null
         };
         
-        // Ensure Super Admin always has consistent state
         if (freshUser.username === 'admin') {
-            freshUser.permissions = ADMIN_PERMISSIONS;
-            freshUser.role = 'admin';
-            freshUser.isActive = true; // Cannot be deactivated
+            freshUser.permissions = createFullPerms('all');
         }
         
         return freshUser;
-
-    } catch (e) {
-        return null;
-    }
+    } catch (e) { return null; }
 };
 
-export const hasPermission = (user: User, resource: string, action: string): boolean => {
-    if (!user) return false;
+// --- SITE SETTINGS & MISC ---
+
+export const getSiteSettings = async (): Promise<SiteSettings> => {
+    try {
+        const settings = await apiRequest('get_settings', 'GET', null, undefined, true);
+        if(settings && settings.siteName) return settings;
+    } catch(e) {}
     
-    // ----------------------------------------------------------------
-    // SUPER ADMIN BYPASS: The user 'admin' has absolute power
-    // ----------------------------------------------------------------
-    if (user.username === 'admin') return true;
-
-    // For everyone else (even other 'admins'), check the permissions array
-    if (!user.permissions || !Array.isArray(user.permissions)) {
-        return false;
-    }
-
-    const resPerm = user.permissions.find(p => p.resource === resource);
-    return resPerm ? resPerm.actions.includes(action as any) : false;
+    const stored = localStorage.getItem(STORAGE_KEY_SETTINGS);
+    return stored ? JSON.parse(stored) : DEFAULT_SETTINGS;
 };
 
-// --- USER MANAGEMENT ---
+export const saveSiteSettings = async (settings: SiteSettings) => {
+    await apiRequest('save_settings', 'POST', settings, undefined, true).catch(() => {});
+    localStorage.setItem(STORAGE_KEY_SETTINGS, JSON.stringify(settings));
+    applySiteSettings(settings);
+};
+
+export const applySiteSettings = (settings: SiteSettings) => {
+    document.title = settings.siteName;
+    document.documentElement.style.setProperty('--color-primary', settings.primaryColor);
+    document.documentElement.style.setProperty('--color-secondary', settings.secondaryColor);
+};
+
+// --- DATA MANAGEMENT ---
+
 export const getUsers = async (currentUser: User): Promise<User[]> => {
-    // The filtering now happens in Backend based on X-User-Id, so we just return what we get
     const allUsers = await apiRequest('get_users');
     let usersList = allUsers.map((u: any) => ({
         ...u,
         id: Number(u.id),
         supervisorId: u.supervisorId ? Number(u.supervisorId) : null,
         isActive: u.isActive == 1 || u.isActive === true,
-        permissions: u.permissions ? (typeof u.permissions === 'string' ? JSON.parse(u.permissions) : u.permissions) : (u.role === 'admin' ? ADMIN_PERMISSIONS : (u.role === 'supervisor' ? SUPERVISOR_PERMISSIONS : DELEGATE_PERMISSIONS)),
+        permissions: getRoleById(u.role)?.permissions || [],
         deviceId: u.deviceId || null
     }));
-    return usersList;
+
+    const viewPerm = currentUser.permissions.find(p => p.resource === 'users' && p.action === 'view');
+    const scope = viewPerm?.scope || 'none';
+
+    if (currentUser.username === 'admin') return usersList;
+    if (scope === 'all') return usersList;
+    if (scope === 'team') return usersList.filter((u: User) => u.supervisorId === currentUser.id || u.id === currentUser.id);
+    if (scope === 'own') return usersList.filter((u: User) => u.id === currentUser.id);
+
+    return [];
 };
 
 export const saveUser = async (userToSave: User): Promise<void> => {
-    const userSession = getSession();
-    let logDetails = '';
-    const isUpdate = userToSave.id && userToSave.id !== 0;
-
-    // PROTECTION: Cannot change role of Super Admin via normal save
-    if (userToSave.username === 'admin' && userToSave.role !== 'admin') {
-        throw new Error("لا يمكن تغيير صلاحية الحساب الرئيسي (Super Admin)");
-    }
-    if (userToSave.username === 'admin' && userToSave.isActive === false) {
-        throw new Error("لا يمكن إيقاف الحساب الرئيسي (Super Admin)");
-    }
-
-    // Simplified Log Details
-    logDetails = isUpdate ? `Updated user ${userToSave.username}` : `Created new user: ${userToSave.username}`;
-
-    const payload = { ...userToSave, permissions: userToSave.permissions };
+    const payload = { ...userToSave };
     await apiRequest('save_user', 'POST', payload);
-    
-    logAction(userSession?.username || 'System', isUpdate ? 'UPDATE' : 'CREATE', 'User', logDetails);
+    logAction(getSession()?.username || 'System', userToSave.id ? 'UPDATE' : 'CREATE', 'User', `Saved user: ${userToSave.username}`);
 };
 
 export const deleteUser = async (id: number): Promise<void> => {
-    // Protection: Cannot delete Super Admin
-    if (id === 1) { 
-        throw new Error("لا يمكن حذف الحساب الرئيسي (Super Admin)");
-    }
-
+    if (id === 1) throw new Error("Super Admin cannot be deleted");
     await apiRequest(`delete_user&id=${id}`, 'GET');
-    const currentUser = getSession();
-    logAction(currentUser?.username || 'System', 'DELETE', 'User', `Deleted user ID: ${id}`);
 };
 
 export const toggleUserStatus = async (id: number): Promise<void> => {
     await apiRequest(`toggle_user_status&id=${id}`, 'GET');
-    const currentUser = getSession();
-    logAction(currentUser?.username || 'System', 'UPDATE', 'User', `Toggled active status for user ID: ${id}`);
 };
 
-// --- LOCATIONS & ACTIVITY ---
+export const resetUserDevice = async (id: number): Promise<void> => {
+    await apiRequest(`reset_user_device&id=${id}`, 'GET');
+};
+
 export const getODBLocationsPaginated = async (page: number, limit: number, search: string = '', signal?: AbortSignal): Promise<{data: ODBLocation[], total: number, totalPages: number}> => {
-    try {
-        const result = await apiRequest(`get_locations_paginated&page=${page}&limit=${limit}&search=${encodeURIComponent(search)}`, 'GET', null, signal);
-        const mappedData = result.data.map((loc: any) => ({
-            ...loc,
-            id: Number(loc.id),
-            ODB_ID: loc.ODB_ID || loc.odb_id,
-            CITYNAME: loc.CITYNAME || loc.city_name,
-            LATITUDE: Number(loc.LATITUDE || loc.latitude),
-            LONGITUDE: Number(loc.LONGITUDE || loc.longitude),
-            lastEditedBy: loc.last_edited_by || loc.lastEditedBy,
-            lastEditedAt: loc.last_edited_at || loc.lastEditedAt,
-            ownerId: loc.ownerId ? Number(loc.ownerId) : null,
-            ownerName: loc.ownerName,
-            isLocked: loc.isLocked == 1 || loc.isLocked === true,
-            image: undefined 
-        }));
-        return { data: mappedData, total: Number(result.total), totalPages: Number(result.totalPages) };
-    } catch (e: any) {
-        throw e;
-    }
-};
+    const user = getSession();
+    if (!user) throw new Error("Unauthorized");
 
-export const searchODBLocation = async (query: string): Promise<ODBLocation[]> => {
-    // Add global_search=1 to bypass ownership checks
-    const result = await apiRequest(`get_locations_paginated&page=1&limit=5&search=${encodeURIComponent(query)}&global_search=1`, 'GET');
+    const viewPerm = user.permissions.find(p => p.resource === 'odb' && p.action === 'view');
+    const scope = viewPerm?.scope || 'none';
+
+    let queryParams = `get_locations_paginated&page=${page}&limit=${limit}&search=${encodeURIComponent(search)}`;
     
-    return result.data.map((loc: any) => ({
-        ...loc,
-        id: Number(loc.id),
-        ODB_ID: loc.ODB_ID || loc.odb_id,
-        CITYNAME: loc.CITYNAME || loc.city_name,
-        LATITUDE: Number(loc.LATITUDE || loc.latitude),
-        LONGITUDE: Number(loc.LONGITUDE || loc.longitude),
-        lastEditedBy: loc.last_edited_by || loc.lastEditedBy,
-        lastEditedAt: loc.last_edited_at || loc.lastEditedAt,
-        ownerId: loc.ownerId ? Number(loc.ownerId) : null,
-        ownerName: loc.ownerName,
-        isLocked: loc.isLocked == 1 || loc.isLocked === true,
-        image: undefined 
-    }));
-};
-
-export const getAllLocationsForMap = async (): Promise<ODBLocation[]> => {
-     try {
-        const result = await apiRequest(`get_locations_paginated&page=1&limit=500`, 'GET');
-        return result.data.map((loc: any) => ({
-            ...loc,
-            id: Number(loc.id),
-            ODB_ID: loc.ODB_ID || loc.odb_id,
-            CITYNAME: loc.CITYNAME || loc.city_name,
-            LATITUDE: Number(loc.LATITUDE || loc.latitude),
-            LONGITUDE: Number(loc.LONGITUDE || loc.longitude),
-            ownerId: loc.ownerId ? Number(loc.ownerId) : null,
-            ownerName: loc.ownerName,
-            isLocked: loc.isLocked == 1 || loc.isLocked === true,
-            image: undefined 
-        }));
-    } catch (e) {
-        console.error(e);
-        return [];
-    }
-};
-
-export const getLocationDetails = async (id: number): Promise<ODBLocation> => {
-    const result = await apiRequest(`get_location_details&id=${id}`, 'GET');
-    const loc = Array.isArray(result) ? result[0] : result;
+    const result = await apiRequest(queryParams, 'GET', null, signal);
     
-    if (!loc) throw new Error("الموقع غير موجود");
+    let mappedData = result.data.map((loc: any) => mapLocation(loc));
 
-    return {
-        ...loc,
-        id: Number(loc.id),
-        ODB_ID: loc.ODB_ID || loc.odb_id,
-        CITYNAME: loc.CITYNAME || loc.city_name,
-        LATITUDE: Number(loc.LATITUDE || loc.latitude),
-        LONGITUDE: Number(loc.LONGITUDE || loc.longitude),
-        lastEditedBy: loc.last_edited_by || loc.lastEditedBy,
-        lastEditedAt: loc.last_edited_at || loc.lastEditedAt,
-        ownerId: loc.ownerId ? Number(loc.ownerId) : null,
-        ownerName: loc.ownerName,
-        isLocked: loc.isLocked == 1 || loc.isLocked === true,
-        image: loc.image
-    };
-};
-
-export const getMyActivity = async (username: string, page: number = 1, limit: number = 20): Promise<{data: ODBLocation[], total: number}> => {
-    const result = await apiRequest(`get_locations_paginated&page=${page}&limit=${limit}&editor=${encodeURIComponent(username)}`, 'GET');
-    
-    const mappedData = result.data.map((loc: any) => ({
-        ...loc,
-        id: Number(loc.id),
-        ODB_ID: loc.ODB_ID || loc.odb_id,
-        CITYNAME: loc.CITYNAME || loc.city_name,
-        LATITUDE: Number(loc.LATITUDE || loc.latitude),
-        LONGITUDE: Number(loc.LONGITUDE || loc.longitude),
-        lastEditedBy: loc.last_edited_by || loc.lastEditedBy,
-        lastEditedAt: loc.last_edited_at || loc.lastEditedAt,
-        ownerId: loc.ownerId ? Number(loc.ownerId) : null,
-        ownerName: loc.ownerName,
-        isLocked: loc.isLocked == 1 || loc.isLocked === true,
-        image: undefined 
-    }));
-    
-    return { data: mappedData, total: Number(result.total) };
-};
-
-export const getNearbyLocationsAPI = async (lat: number, lng: number, radius: number, limit: number): Promise<NearbyLocation[]> => {
-    const effectiveRadius = radius === 0 ? 50000 : radius;
-    let data = await apiRequest(`get_nearby_locations&lat=${lat}&lng=${lng}&radius=${effectiveRadius}&limit=${limit}`, 'GET');
-    
-    if (!Array.isArray(data)) {
-        return [];
+    if (user.username !== 'admin' && scope !== 'all') {
+        if (scope === 'own') {
+            mappedData = mappedData.filter((l: ODBLocation) => l.ownerId === user.id);
+        }
     }
 
-    let mappedLocations = data.map((loc: any) => {
-        const lLat = Number(loc.LATITUDE || loc.latitude);
-        const lLng = Number(loc.LONGITUDE || loc.longitude);
-        
-        let dist = loc.distance ? Number(loc.distance) : calculateDistance(lat, lng, lLat, lLng);
-
-        return {
-            ...loc,
-            id: Number(loc.id),
-            ODB_ID: loc.ODB_ID || loc.odb_id,
-            CITYNAME: loc.CITYNAME || loc.city_name,
-            LATITUDE: lLat,
-            LONGITUDE: lLng,
-            distance: dist,
-            lastEditedBy: loc.last_edited_by || loc.lastEditedBy,
-            lastEditedAt: loc.last_edited_at || loc.lastEditedAt,
-            ownerId: loc.ownerId ? Number(loc.ownerId) : null,
-            ownerName: loc.ownerName,
-            isLocked: loc.isLocked == 1 || loc.isLocked === true,
-            image: undefined 
-        };
-    });
-
-    mappedLocations.sort((a, b) => a.distance - b.distance);
-
-    if (limit > 0) {
-        mappedLocations = mappedLocations.slice(0, limit);
-    }
-
-    return mappedLocations;
+    return { data: mappedData, total: Number(result.total), totalPages: Number(result.totalPages) };
 };
 
 export const saveODBLocation = async (location: ODBLocation): Promise<void> => {
-    const userSession = getSession();
-    
-    let finalLocation = { ...location };
-    let isNew = false;
+    const user = getSession();
+    if (!user) throw new Error("No session");
 
-    if (!finalLocation.id || finalLocation.id === 0) {
-        isNew = true;
-        if (userSession) {
-            finalLocation.ownerId = userSession.id;
-            finalLocation.ownerName = userSession.name;
-        }
-        finalLocation.isLocked = true;
-    } 
-    // Ownership is now also handled in Backend, but we send defaults just in case
+    const isNew = !location.id || location.id === 0;
     
+    if (!isNew && !checkPermission(user, 'odb', 'edit', location.ownerId)) {
+        throw new Error("ليس لديك صلاحية لتعديل هذا الموقع (خارج النطاق المسموح)");
+    }
+
+    if (isNew) {
+        location.ownerId = user.id;
+        location.ownerName = user.name;
+        location.isLocked = true;
+    }
+
     const payload = {
-        ...finalLocation,
-        last_edited_by: finalLocation.lastEditedBy,
-        last_edited_at: finalLocation.lastEditedAt,
-        ownerId: finalLocation.ownerId,
-        ownerName: finalLocation.ownerName,
-        isLocked: finalLocation.isLocked
+        ...location,
+        last_edited_by: user.username,
+        last_edited_at: new Date().toISOString()
     };
     await apiRequest('save_location', 'POST', payload);
-
-    logAction(userSession?.username || 'System', isNew ? 'CREATE' : 'UPDATE', 'Location', `${isNew ? 'Created' : 'Updated'} ODB Location: ${finalLocation.CITYNAME} (${finalLocation.ODB_ID})`);
-};
-
-export const saveBulkODBLocations = async (locations: Omit<ODBLocation, 'id'>[]): Promise<{success: boolean, added: number, skipped: number}> => {
-    const result = await apiRequest('save_bulk_locations', 'POST', { locations });
-    const userSession = getSession();
-    logAction(userSession?.username || 'System', 'EXPORT', 'Location', `Bulk imported ${result.added} locations`);
-    return result; 
 };
 
 export const deleteODBLocation = async (id: number): Promise<void> => {
     await apiRequest(`delete_location&id=${id}`, 'GET');
-    const userSession = getSession();
-    logAction(userSession?.username || 'System', 'DELETE', 'Location', `Deleted ODB Location ID: ${id}`);
 };
 
-// --- SITE SETTINGS ---
-export const getSiteSettings = async (): Promise<SiteSettings> => {
-    try {
-        const settings = await apiRequest('get_settings', 'GET', null, undefined, true);
-        return { ...DEFAULT_SETTINGS, ...settings, searchRadius: Number(settings.searchRadius), maxResults: Number(settings.maxResults) };
-    } catch (e) {
-        return DEFAULT_SETTINGS;
-    }
+export const searchODBLocation = async (query: string): Promise<ODBLocation[]> => {
+    const result = await apiRequest(`search_locations&query=${encodeURIComponent(query)}`);
+    return Array.isArray(result) ? result.map(mapLocation) : [];
 };
 
-export const saveSiteSettings = async (settings: SiteSettings): Promise<void> => {
-    await apiRequest('save_settings', 'POST', settings);
-    applySiteSettings(settings);
-    const userSession = getSession();
-    logAction(userSession?.username || 'System', 'UPDATE', 'Settings', 'Updated global site settings');
+export const getAllLocationsForMap = async (): Promise<ODBLocation[]> => {
+    const result = await apiRequest('get_all_locations');
+    return Array.isArray(result) ? result.map(mapLocation) : [];
 };
 
-export const applySiteSettings = (settings: SiteSettings) => {
-    document.title = settings.siteName;
-    const root = document.documentElement;
-    root.style.setProperty('--color-primary', settings.primaryColor);
-    root.style.setProperty('--color-secondary', settings.secondaryColor);
-    root.style.setProperty('--color-accent', settings.accentColor);
+export const getLocationDetails = async (id: number): Promise<ODBLocation> => {
+     const result = await apiRequest(`get_location_details&id=${id}`);
+     return mapLocation(result);
 };
+
+export const getMyActivity = async (username: string): Promise<{data: ODBLocation[]}> => {
+    const result = await apiRequest(`get_my_activity&username=${encodeURIComponent(username)}`);
+    return { data: Array.isArray(result) ? result.map(mapLocation) : [] };
+};
+
+export const getNearbyLocationsAPI = async (lat: number, lng: number, radius: number, limit: number): Promise<NearbyLocation[]> => {
+    const result = await apiRequest(`get_nearby&lat=${lat}&lng=${lng}&radius=${radius}&limit=${limit}`);
+    return Array.isArray(result) ? result.map((l: any) => ({
+        ...mapLocation(l),
+        distance: l.distance || 0
+    })) : [];
+};
+
+export const saveBulkODBLocations = async (locations: Omit<ODBLocation, 'id'>[]): Promise<{added: number, skipped: number}> => {
+    return await apiRequest('import_csv', 'POST', { locations });
+};
+
+// --- HELPERS ---
+const mapLocation = (loc: any): ODBLocation => ({
+    ...loc,
+    id: Number(loc.id),
+    ODB_ID: loc.ODB_ID || loc.odb_id,
+    CITYNAME: loc.CITYNAME || loc.city_name,
+    LATITUDE: Number(loc.LATITUDE || loc.latitude),
+    LONGITUDE: Number(loc.LONGITUDE || loc.longitude),
+    ownerId: loc.ownerId ? Number(loc.ownerId) : null,
+    ownerName: loc.ownerName,
+    isLocked: loc.isLocked == 1 || loc.isLocked === true
+});
